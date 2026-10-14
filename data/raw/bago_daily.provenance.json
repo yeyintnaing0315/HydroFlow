@@ -1,0 +1,12 @@
+﻿{
+    "source_path":  "D:\\Ai_Project\\Hydroflow\\data\\processed\\daily.csv",
+    "copied_as":  "data/raw/bago_daily.csv",
+    "sha256":  "c257da50c3bd912cae33e2d4255e82ed337ebbe9c67e07db47d20ac1a8f7b727",
+    "row_count":  40172,
+    "provenance":  "Bago relief-derived flood labels with Open-Meteo reanalysis rainfall and GloFAS modeled discharge",
+    "limitations":  [
+                        "Academic prototype data",
+                        "Discharge is not measured water level",
+                        "Relief labels are not a complete flood inventory"
+                    ]
+}
