@@ -1,7 +1,7 @@
 from datetime import date, datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class Coordinates(BaseModel):
@@ -20,6 +20,11 @@ class PredictResponse(BaseModel):
     threshold: float = Field(ge=0, le=1)
     model_version: str
     alert_recorded: bool
+    evidence_type: Literal["model_prediction"] = "model_prediction"
+    probability_status: Literal["uncalibrated_academic_score"] = "uncalibrated_academic_score"
+    uncertainty: str = (
+        "Not calibrated and not validated as a lead-time forecast; do not interpret operationally."
+    )
 
 
 class RiskResponse(BaseModel):
@@ -34,6 +39,8 @@ class ForecastPoint(BaseModel):
     timestamp: datetime
     precipitation_mm: float | None = None
     temperature_c: float | None = None
+    relative_humidity_pct: float | None = None
+    wind_speed_m_s: float | None = None
     discharge_m3_s: float | None = None
 
 
@@ -60,6 +67,7 @@ class HistoricalPoint(BaseModel):
     precipitation_mm: float | None = None
     temperature_c: float | None = None
     relative_humidity_pct: float | None = None
+    wind_speed_m_s: float | None = None
 
 
 class HistoricalResponse(Coordinates):
@@ -81,19 +89,30 @@ class OutlookDay(BaseModel):
     date: date
     precipitation_mm: float
     discharge_m3_s: float
+    temperature_c: float | None = None
+    relative_humidity_pct: float | None = None
+    wind_speed_m_s: float | None = None
+    rainfall_7d_mm: float | None = None
+    rainfall_30d_mm: float | None = None
     flood_probability: float = Field(ge=0, le=1)
     predicted_flood: bool
     risk_score: float
     risk_level: Literal["low", "moderate", "high", "severe"]
     alert_recorded: bool
+    forecast_horizon_hours: int = Field(ge=0)
+    evidence_type: Literal["model_prediction"] = "model_prediction"
+    probability_status: Literal["uncalibrated_academic_score"] = "uncalibrated_academic_score"
+    input_freshness: dict[str, str | None] = Field(default_factory=dict)
+    uncertainty: str = (
+        "Uncalibrated academic score for flood in the next 3 days. Not an official warning."
+    )
 
 
 class OutlookResponse(BaseModel):
     township_id: str
-    source: Literal["Open-Meteo rainfall and GloFAS discharge"] = (
-        "Open-Meteo rainfall and GloFAS discharge"
-    )
+    source: str = "Open-Meteo rainfall, NASA POWER meteorology, and GloFAS discharge"
     model_version: str
+    in_training_set: bool = False
     days: list[OutlookDay]
 
 
@@ -111,6 +130,10 @@ class AdminTownship(BaseModel):
     name_local: str
     latitude: float
     longitude: float
+    geometry: dict | None = None
+    level: int = 3
+    area_type: str = "township"
+    coverage_status: str = "complete"
 
 
 class AdminDistrict(AdminTownship):
@@ -118,13 +141,152 @@ class AdminDistrict(AdminTownship):
 
 
 class BagoAreasResponse(BaseModel):
-    source: Literal["Open Admin Data"] = "Open Admin Data"
-    region_id: Literal["MMR007"] = "MMR007"
+    source: str
+    dataset_version: str
+    license: str
+    coverage_note: str
+    region_id: str
     region_name_en: Literal["Bago"] = "Bago"
     region_name_local: str
     latitude: float
     longitude: float
+    geometry: dict | None = None
     districts: list[AdminDistrict]
+
+
+class SourceStatusResponse(BaseModel):
+    key: str
+    name: str
+    kind: str
+    enabled: bool
+    unavailable_reason: str | None = None
+    attribution: str
+    license_name: str | None = None
+    url: str
+
+
+class AdminAreaResponse(BaseModel):
+    id: str
+    parent_id: str | None = None
+    level: int
+    area_type: str
+    name_en: str
+    name_local: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    geometry: dict | None = None
+    coverage_status: str
+
+
+class AdminHierarchyResponse(BaseModel):
+    source: str
+    dataset_version: str
+    license: str
+    coverage_note: str
+    areas: list[AdminAreaResponse]
+
+
+class OfficialWarningResponse(BaseModel):
+    id: int
+    source: str
+    external_id: str
+    issued_at: datetime
+    effective_at: datetime | None = None
+    expires_at: datetime | None = None
+    severity: str
+    status: str
+    message: str
+    source_url: str | None = None
+    coverage: dict = Field(default_factory=dict)
+
+
+class OfficialWarningImport(BaseModel):
+    external_id: str = Field(min_length=1, max_length=160)
+    issued_at: datetime
+    effective_at: datetime | None = None
+    expires_at: datetime | None = None
+    severity: str = Field(min_length=1, max_length=40)
+    status: str = Field(default="actual", min_length=1, max_length=40)
+    message: str = Field(min_length=1, max_length=10_000)
+    source_url: str = Field(pattern=r"^https://", max_length=500)
+    coverage: dict = Field(default_factory=dict, max_length=100)
+
+    @field_validator("issued_at", "effective_at", "expires_at")
+    @classmethod
+    def require_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("warning datetimes must include a timezone")
+        return value
+
+
+class InundationProductResponse(BaseModel):
+    id: int
+    evidence_type: Literal["observed_inundation"] = "observed_inundation"
+    observed_at: datetime
+    retrieved_at: datetime
+    geometry: dict
+    quality: str
+    affected_population: int | None = Field(default=None, ge=0)
+    population_source: str | None = None
+    metadata: dict = Field(default_factory=dict)
+
+
+class SettlementResponse(BaseModel):
+    id: int
+    source_code: str
+    admin_area_id: int | None = None
+    name_en: str
+    name_local: str | None = None
+    settlement_type: str
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    verification_status: str
+    note: Literal[
+        "A settlement point does not imply that the settlement area is inundated."
+    ]
+
+
+class ExposureSummaryResponse(BaseModel):
+    id: int
+    inundation_product_id: int
+    admin_area_id: int | None = None
+    population_source: str
+    exposed_population: int = Field(ge=0)
+    calculated_at: datetime
+    method: str
+    uncertainty: dict = Field(default_factory=dict)
+
+
+class RiskResultResponse(BaseModel):
+    id: int
+    admin_area_id: int | None = None
+    admin_area_code: str | None = None
+    admin_area_name: str | None = None
+    latitude: float | None = Field(default=None, ge=-90, le=90)
+    longitude: float | None = Field(default=None, ge=-180, le=180)
+    valid_at: datetime
+    forecast_horizon_hours: int = Field(ge=0)
+    evidence_type: Literal["heuristic_risk", "model_prediction"]
+    risk_level: Literal["low", "moderate", "high", "severe"]
+    risk_score: float | None = Field(default=None, ge=0, le=100)
+    probability: float | None = Field(default=None, ge=0, le=1)
+    input_freshness: dict = Field(default_factory=dict)
+    supporting_evidence: dict = Field(default_factory=dict)
+    uncertainty: dict = Field(default_factory=dict)
+
+
+class JobRunResponse(BaseModel):
+    id: int
+    job_name: str
+    scheduled_for: datetime
+    started_at: datetime
+    finished_at: datetime | None = None
+    status: str
+    attempt: int
+    model_version: str | None = None
+    freshness: dict = Field(default_factory=dict)
+    coverage: dict = Field(default_factory=dict)
+    error: str | None = None
 
 
 class FloodHistoryResponse(BaseModel):

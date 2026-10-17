@@ -1,4 +1,5 @@
 import type {
+  AdminHierarchyResponse,
   Alert,
   BagoAreasResponse,
   CensusResponse,
@@ -9,11 +10,17 @@ import type {
   HelpBriefResponse,
   HelpResponse,
   HistoricalResponse,
+  InundationProduct,
+  JobRun,
+  OfficialWarning,
   OutlookResponse,
   PredictInput,
   PredictResponse,
   RoutePlanRequest,
   RoutePlanResponse,
+  RiskResult,
+  SourceStatus,
+  SettlementPoint,
   Township,
 } from "./types";
 
@@ -62,7 +69,8 @@ function query(latitude: number, longitude: number): string {
 function recentHistoryQuery(latitude: number, longitude: number): string {
   const end = new Date();
   const start = new Date(end);
-  start.setUTCDate(end.getUTCDate() - 7);
+  start.setUTCDate(end.getUTCDate() - 5);
+  end.setUTCDate(end.getUTCDate() - 1);
   return new URLSearchParams({
     latitude: String(latitude),
     longitude: String(longitude),
@@ -88,9 +96,48 @@ export const api = {
   topography: (latitude: number, longitude: number) =>
     request<TopographyResponse>(`/topography?${query(latitude, longitude)}`),
   alerts: () => request<Alert[]>("/alerts"),
-  historical: (latitude: number, longitude: number) =>
-    request<HistoricalResponse>(`/historical?${recentHistoryQuery(latitude, longitude)}`),
+  historical: (
+    latitude: number,
+    longitude: number,
+    start?: string,
+    end?: string,
+    townshipId?: string,
+  ) => {
+    const params = new URLSearchParams(
+      start && end
+        ? {
+            latitude: String(latitude),
+            longitude: String(longitude),
+            start,
+            end,
+          }
+        : Object.fromEntries(new URLSearchParams(recentHistoryQuery(latitude, longitude))),
+    );
+    if (townshipId) params.set("township_id", townshipId);
+    return request<HistoricalResponse>(`/historical?${params}`);
+  },
   floodHistory: () => request<FloodHistoryResponse>("/flood-history?limit=8"),
   planRoute: (input: RoutePlanRequest) =>
     request<RoutePlanResponse>("/routes", { method: "POST", body: JSON.stringify(input) }),
+  sources: () => request<SourceStatus[]>("/sources"),
+  officialWarnings: () => request<OfficialWarning[]>("/official-warnings"),
+  runs: () => request<JobRun[]>("/runs"),
+  riskResults: () => request<RiskResult[]>("/risk-results"),
+  inundationProducts: () => request<InundationProduct[]>("/inundation-products"),
+  runPrediction: (adminKey: string) =>
+    request<JobRun>("/runs/prediction", {
+      method: "POST",
+      headers: { "X-Admin-Key": adminKey },
+    }),
+  adminAreas: (search?: string, includeGeometry = false) => {
+    const query = new URLSearchParams({ max_level: "5" });
+    if (search) query.set("search", search);
+    if (includeGeometry) query.set("include_geometry", "true");
+    return request<AdminHierarchyResponse>(`/admin-areas?${query}`);
+  },
+  settlements: (adminAreaCode?: string) => {
+    const query = new URLSearchParams({ limit: "5000" });
+    if (adminAreaCode) query.set("admin_area_code", adminAreaCode);
+    return request<SettlementPoint[]>(`/settlements?${query}`);
+  },
 };

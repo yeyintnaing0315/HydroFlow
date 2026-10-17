@@ -1,3 +1,5 @@
+import type { Geometry } from "geojson";
+
 export type LoadState = "loading" | "ready" | "empty" | "error";
 export type RiskLevel = "low" | "moderate" | "high" | "severe";
 
@@ -21,6 +23,10 @@ export interface AdminTownship extends Coordinates {
   slug: string;
   name_en: string;
   name_local: string;
+  geometry?: Geometry | null;
+  level: number;
+  area_type: string;
+  coverage_status: string;
 }
 
 export interface AdminDistrict extends AdminTownship {
@@ -29,9 +35,13 @@ export interface AdminDistrict extends AdminTownship {
 
 export interface BagoAreasResponse extends Coordinates {
   source: string;
+  dataset_version: string;
+  license: string;
+  coverage_note: string;
   region_id: string;
   region_name_en: string;
   region_name_local: string;
+  geometry?: Geometry | null;
   districts: AdminDistrict[];
 }
 
@@ -39,17 +49,28 @@ export interface OutlookDay {
   date: string;
   precipitation_mm: number;
   discharge_m3_s: number;
+  temperature_c?: number | null;
+  relative_humidity_pct?: number | null;
+  wind_speed_m_s?: number | null;
+  rainfall_7d_mm?: number | null;
+  rainfall_30d_mm?: number | null;
   flood_probability: number;
   predicted_flood: boolean;
   risk_score: number;
   risk_level: RiskLevel;
   alert_recorded: boolean;
+  forecast_horizon_hours: number;
+  evidence_type: "model_prediction";
+  probability_status: "uncalibrated_academic_score";
+  input_freshness: Record<string, string | null>;
+  uncertainty: string;
 }
 
 export interface OutlookResponse {
   township_id: string;
   source: string;
   model_version: string;
+  in_training_set?: boolean;
   days: OutlookDay[];
 }
 
@@ -57,6 +78,8 @@ export interface HealthResponse {
   status: string;
   service: string;
   version: string;
+  database: { ready: boolean; missing_tables: string[]; revision?: string | null };
+  models: { flood: boolean; help: boolean };
 }
 
 export interface PredictResponse {
@@ -65,6 +88,110 @@ export interface PredictResponse {
   threshold: number;
   model_version: string;
   alert_recorded: boolean;
+  evidence_type: "model_prediction";
+  probability_status: "uncalibrated_academic_score";
+  uncertainty: string;
+}
+
+export interface SourceStatus {
+  key: string;
+  name: string;
+  kind: string;
+  enabled: boolean;
+  unavailable_reason?: string | null;
+  attribution: string;
+  license_name?: string | null;
+  url: string;
+}
+
+export interface AdminArea {
+  id: string;
+  parent_id?: string | null;
+  level: number;
+  area_type: string;
+  name_en: string;
+  name_local?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  geometry?: Geometry | null;
+  coverage_status: string;
+}
+
+export interface AdminHierarchyResponse {
+  source: string;
+  dataset_version: string;
+  license: string;
+  coverage_note: string;
+  areas: AdminArea[];
+}
+
+export interface OfficialWarning {
+  id: number;
+  source: string;
+  external_id: string;
+  issued_at: string;
+  effective_at?: string | null;
+  expires_at?: string | null;
+  severity: string;
+  status: string;
+  message: string;
+  source_url?: string | null;
+  coverage: Record<string, unknown>;
+}
+
+export interface JobRun {
+  id: number;
+  job_name: string;
+  scheduled_for: string;
+  started_at: string;
+  finished_at?: string | null;
+  status: string;
+  attempt: number;
+  model_version?: string | null;
+  freshness: Record<string, unknown>;
+  coverage: Record<string, unknown>;
+  error?: string | null;
+}
+
+export interface RiskResult {
+  id: number;
+  admin_area_id?: number | null;
+  admin_area_code?: string | null;
+  admin_area_name?: string | null;
+  latitude?: number | null;
+  longitude?: number | null;
+  valid_at: string;
+  forecast_horizon_hours: number;
+  evidence_type: "heuristic_risk" | "model_prediction";
+  risk_level: RiskLevel;
+  risk_score?: number | null;
+  probability?: number | null;
+  input_freshness: Record<string, unknown>;
+  supporting_evidence: Record<string, unknown>;
+  uncertainty: Record<string, unknown>;
+}
+
+export interface InundationProduct {
+  id: number;
+  evidence_type: "observed_inundation";
+  observed_at: string;
+  retrieved_at: string;
+  geometry: Geometry;
+  quality: string;
+  affected_population?: number | null;
+  population_source?: string | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface SettlementPoint extends Coordinates {
+  id: number;
+  source_code: string;
+  admin_area_id?: number | null;
+  name_en: string;
+  name_local?: string | null;
+  settlement_type: string;
+  verification_status: string;
+  note: string;
 }
 
 export interface RiskResponse {
@@ -77,6 +204,8 @@ export interface ForecastPoint {
   timestamp: string;
   precipitation_mm?: number | null;
   temperature_c?: number | null;
+  relative_humidity_pct?: number | null;
+  wind_speed_m_s?: number | null;
   discharge_m3_s?: number | null;
 }
 
@@ -108,6 +237,7 @@ export interface HistoricalPoint {
   precipitation_mm?: number | null;
   temperature_c?: number | null;
   relative_humidity_pct?: number | null;
+  wind_speed_m_s?: number | null;
 }
 
 export interface HistoricalResponse extends Coordinates {

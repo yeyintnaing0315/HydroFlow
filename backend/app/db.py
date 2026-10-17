@@ -1,7 +1,8 @@
 import os
 from collections.abc import Generator
+from pathlib import Path
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 
@@ -9,46 +10,53 @@ class Base(DeclarativeBase):
     pass
 
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./hydroflow.db")
+_project_db = (Path(__file__).resolve().parents[2] / "hydroflow.db").as_posix()
+DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{_project_db}")
 _connect_args = {"check_same_thread": False} if DATABASE_URL.startswith("sqlite") else {}
 engine = create_engine(DATABASE_URL, connect_args=_connect_args)
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
 
-def create_tables() -> None:
-    from sqlalchemy import text
+REQUIRED_TABLES = {
+    "locations",
+    "observations",
+    "alerts",
+    "data_sources",
+    "dataset_versions",
+    "admin_areas",
+    "admin_aliases",
+    "settlements",
+    "provider_observations",
+    "official_warnings",
+    "inundation_products",
+    "exposure_summaries",
+    "model_versions",
+    "job_runs",
+    "risk_results",
+    "historical_days",
+}
 
+
+def schema_status() -> dict[str, object]:
+    """Report migration readiness without changing or deleting user data."""
+    available = set(inspect(engine).get_table_names())
+    missing = sorted(REQUIRED_TABLES - available)
+    revision = None
+    if "alembic_version" in available:
+        with engine.connect() as connection:
+            revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar()
+    return {
+        "ready": not missing,
+        "missing_tables": missing,
+        "revision": revision,
+    }
+
+
+def create_tables() -> None:
+    """Test/development helper; deployments must run Alembic migrations."""
     from app import models  # noqa: F401
 
     Base.metadata.create_all(engine)
-    with engine.begin() as connection:
-        connection.execute(text(
-            """
-            DELETE FROM alerts
-            WHERE location_id IN (
-                SELECT id FROM locations
-                WHERE id NOT IN (SELECT MIN(id) FROM locations GROUP BY name)
-            )
-            """
-        ))
-        connection.execute(text(
-            """
-            DELETE FROM observations
-            WHERE location_id IN (
-                SELECT id FROM locations
-                WHERE id NOT IN (SELECT MIN(id) FROM locations GROUP BY name)
-            )
-            """
-        ))
-        connection.execute(text(
-            """
-            DELETE FROM locations
-            WHERE id NOT IN (SELECT MIN(id) FROM locations GROUP BY name)
-            """
-        ))
-        connection.execute(text(
-            "CREATE UNIQUE INDEX IF NOT EXISTS uq_location_name ON locations (name)"
-        ))
 
 
 def drop_tables() -> None:

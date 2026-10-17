@@ -1,8 +1,11 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import { CircleMarker, MapContainer, Polyline, Popup, TileLayer, useMap } from "react-leaflet";
+import { CircleMarker, GeoJSON, MapContainer, Polyline, Popup, TileLayer, useMap } from "react-leaflet";
+import type { GeoJsonObject } from "geojson";
 import { api } from "./api";
 import HumanitarianDashboard from "./HumanitarianDashboard";
 import type {
+  AdminArea,
+  AdminHierarchyResponse,
   AdminDistrict,
   Alert,
   BagoAreasResponse,
@@ -10,9 +13,15 @@ import type {
   ForecastResponse,
   HealthResponse,
   HistoricalResponse,
+  InundationProduct,
+  JobRun,
   LoadState,
+  OfficialWarning,
   OutlookResponse,
+  RiskResult,
   RoutePlanResponse,
+  SourceStatus,
+  SettlementPoint,
   TopographyResponse,
 } from "./types";
 
@@ -23,10 +32,20 @@ const DISTRICT_COLOR: Record<string, string> = {
   MMR008D002: "#d86a1a",
   nattalin: "#7a4ea3",
   MMR008D001: "#c49212",
+  "MOHA2022-BAGO": "#0b5873",
+  "MOHA2022-NYAUNGLEBIN": "#2d9c6c",
+  "MOHA2022-TAUNGOO": "#16827d",
+  "MOHA2022-THAYARWADY": "#d86a1a",
+  "MOHA2022-NATTALIN": "#7a4ea3",
+  "MOHA2022-PYAY": "#c49212",
 };
 
 function districtColor(id: string): string {
   return DISTRICT_COLOR[id] ?? "#5d727c";
+}
+
+function riskColor(level: string): string {
+  return { low: "#2d9c6c", moderate: "#c49212", high: "#d86a1a", severe: "#a83232" }[level] ?? "#5d727c";
 }
 
 function preferredTownshipId(districts: AdminDistrict[]): string {
@@ -38,7 +57,7 @@ function preferredTownshipId(districts: AdminDistrict[]): string {
 function FitPoints({ points }: { points: [number, number][] }) {
   const map = useMap();
   useEffect(() => {
-    if (points.length > 0) map.fitBounds(points, { padding: [24, 24] });
+    if (points.length > 0) map.fitBounds(points, { padding: [24, 24], maxZoom: 13 });
   }, [map, points]);
   return null;
 }
@@ -65,17 +84,28 @@ function initialStartDate(): string {
   return day.toISOString().slice(0, 10);
 }
 
-function ElevationNote({ resource }: { resource: Resource<TopographyResponse> }) {
-  if (resource.state === "loading") return <p className="hint">Loading Copernicus elevation…</p>;
-  if (resource.state === "error") return <p className="hint">Elevation unavailable: {resource.error}</p>;
-  if (resource.state !== "ready" || resource.data == null) return null;
-  const point = resource.data;
-  return (
-    <p className="hint">
-      Centroid surface elevation {point.elevation_m.toLocaleString()} m from {point.source} (
-      {point.vertical_datum}). {point.note}
-    </p>
-  );
+function localToday(): string {
+  const shifted = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000);
+  return shifted.toISOString().slice(0, 10);
+}
+
+function previousFiveDays(asOf: string): { start: string; end: string } {
+  const end = new Date(`${asOf}T00:00:00Z`);
+  end.setUTCDate(end.getUTCDate() - 1);
+  const start = new Date(end);
+  start.setUTCDate(end.getUTCDate() - 4);
+  return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+}
+
+const PREDICTION_SLOTS = ["06:00", "12:00", "18:00"] as const;
+type PredictionSlot = (typeof PREDICTION_SLOTS)[number];
+
+function currentPredictionSlot(): PredictionSlot {
+  const mmt = new Date(Date.now() + (6 * 60 + 30) * 60_000);
+  const hour = mmt.getUTCHours();
+  if (hour >= 18) return "18:00";
+  if (hour >= 12) return "12:00";
+  return "06:00";
 }
 
 function StateMessage({ resource, empty }: { resource: Resource<unknown>; empty: string }) {
@@ -94,9 +124,22 @@ function App() {
   const [topography, setTopography] = useState<Resource<TopographyResponse>>(loading);
   const [floodHistory, setFloodHistory] = useState<Resource<FloodHistoryResponse>>(loading);
   const [areas, setAreas] = useState<Resource<BagoAreasResponse>>(loading);
+  const [hierarchy, setHierarchy] = useState<Resource<AdminHierarchyResponse>>(loading);
+  const [sources, setSources] = useState<Resource<SourceStatus[]>>(loading);
+  const [officialWarnings, setOfficialWarnings] = useState<Resource<OfficialWarning[]>>(loading);
+  const [runs, setRuns] = useState<Resource<JobRun[]>>(loading);
+  const [riskResults, setRiskResults] = useState<Resource<RiskResult[]>>(loading);
+  const [inundation, setInundation] = useState<Resource<InundationProduct[]>>(loading);
+  const [settlements, setSettlements] = useState<Resource<SettlementPoint[]>>(loading);
   const [selectedTownship, setSelectedTownship] = useState("");
   const [districtFilter, setDistrictFilter] = useState("all");
+  const [placeSearch, setPlaceSearch] = useState("");
+  const [selectedLevel4, setSelectedLevel4] = useState("");
+  const [selectedLevel5, setSelectedLevel5] = useState("");
+  const [selectedBoundary, setSelectedBoundary] = useState<AdminArea>();
   const [startDate, setStartDate] = useState(initialStartDate);
+  const [predictionSlot, setPredictionSlot] = useState<PredictionSlot>(currentPredictionSlot);
+  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [outlook, setOutlook] = useState<Resource<OutlookResponse>>({ state: "empty" });
   const [routeStops, setRouteStops] = useState<string[]>([]);
   const [vehicleProfile, setVehicleProfile] = useState<"car" | "truck" | "fly">("car");
@@ -105,6 +148,8 @@ function App() {
   const [route, setRoute] = useState<Resource<RoutePlanResponse>>({ state: "empty" });
   const [updatedAt, setUpdatedAt] = useState<Date>();
   const [sector, setSector] = useState<"research" | "humanitarian">("research");
+  const [adminKey, setAdminKey] = useState("");
+  const [manualRun, setManualRun] = useState<Resource<JobRun>>({ state: "empty" });
 
   useEffect(() => {
     let active = true;
@@ -114,10 +159,29 @@ function App() {
         api.alerts(),
         api.floodHistory(),
         api.bagoAreas(),
+        api.sources(),
+        api.officialWarnings(),
+        api.runs(),
+        api.riskResults(),
+        api.inundationProducts(),
+        api.adminAreas(),
+        api.settlements(),
       ]);
       if (!active) return;
 
-      const [healthResult, alertsResult, floodHistoryResult, areasResult] = results;
+      const [
+        healthResult,
+        alertsResult,
+        floodHistoryResult,
+        areasResult,
+        sourcesResult,
+        warningsResult,
+        runsResult,
+        riskResult,
+        inundationResult,
+        hierarchyResult,
+        settlementsResult,
+      ] = results;
       setHealth(
         healthResult.status === "fulfilled"
           ? { state: "ready", data: healthResult.value }
@@ -147,6 +211,50 @@ function App() {
         setForecast({ state: "empty" });
         setHistorical({ state: "empty" });
       }
+      setSources(
+        sourcesResult.status === "fulfilled"
+          ? { state: sourcesResult.value.length ? "ready" : "empty", data: sourcesResult.value }
+          : { state: "error", error: errorText(sourcesResult.reason) },
+      );
+      setOfficialWarnings(
+        warningsResult.status === "fulfilled"
+          ? { state: warningsResult.value.length ? "ready" : "empty", data: warningsResult.value }
+          : { state: "error", error: errorText(warningsResult.reason) },
+      );
+      setRuns(
+        runsResult.status === "fulfilled"
+          ? { state: runsResult.value.length ? "ready" : "empty", data: runsResult.value }
+          : { state: "error", error: errorText(runsResult.reason) },
+      );
+      setRiskResults(
+        riskResult.status === "fulfilled"
+          ? { state: riskResult.value.length ? "ready" : "empty", data: riskResult.value }
+          : { state: "error", error: errorText(riskResult.reason) },
+      );
+      setInundation(
+        inundationResult.status === "fulfilled"
+          ? {
+              state: inundationResult.value.length ? "ready" : "empty",
+              data: inundationResult.value,
+            }
+          : { state: "error", error: errorText(inundationResult.reason) },
+      );
+      setHierarchy(
+        hierarchyResult.status === "fulfilled"
+          ? {
+              state: hierarchyResult.value.areas.length ? "ready" : "empty",
+              data: hierarchyResult.value,
+            }
+          : { state: "error", error: errorText(hierarchyResult.reason) },
+      );
+      setSettlements(
+        settlementsResult.status === "fulfilled"
+          ? {
+              state: settlementsResult.value.length ? "ready" : "empty",
+              data: settlementsResult.value,
+            }
+          : { state: "error", error: errorText(settlementsResult.reason) },
+      );
       setUpdatedAt(new Date());
     };
     void load();
@@ -163,18 +271,25 @@ function App() {
     return undefined;
   }, [areas.data, selectedTownship]);
 
+  const level4Areas = useMemo(
+    () => (hierarchy.data?.areas ?? []).filter((area) => area.parent_id === selectedTownship),
+    [hierarchy.data, selectedTownship],
+  );
+  const level5Areas = useMemo(
+    () => (hierarchy.data?.areas ?? []).filter((area) => area.parent_id === selectedLevel4),
+    [hierarchy.data, selectedLevel4],
+  );
+
   useEffect(() => {
     if (!selectedPlace) return;
     let active = true;
     const { latitude, longitude } = selectedPlace.township;
     setForecast(loading);
-    setHistorical(loading);
     setTopography(loading);
     void Promise.allSettled([
       api.forecast(latitude, longitude),
-      api.historical(latitude, longitude),
       api.topography(latitude, longitude),
-    ]).then(([forecastResult, historicalResult, topographyResult]) => {
+    ]).then(([forecastResult, topographyResult]) => {
         if (!active) return;
         setForecast(
           forecastResult.status === "fulfilled"
@@ -183,14 +298,6 @@ function App() {
                 data: forecastResult.value,
               }
             : { state: "error", error: errorText(forecastResult.reason) },
-        );
-        setHistorical(
-          historicalResult.status === "fulfilled"
-            ? {
-                state: historicalResult.value.points.length ? "ready" : "empty",
-                data: historicalResult.value,
-              }
-            : { state: "error", error: errorText(historicalResult.reason) },
         );
         setTopography(
           topographyResult.status === "fulfilled"
@@ -205,53 +312,174 @@ function App() {
     };
   }, [selectedPlace]);
 
-  const submitOutlook = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!selectedPlace) {
-      setOutlook({ state: "error", error: "Bago township list is unavailable" });
-      return;
-    }
+  useEffect(() => {
+    if (!selectedPlace) return;
+    let active = true;
+    const { latitude, longitude, id } = selectedPlace.township;
+    const window = previousFiveDays(localToday());
+    setHistorical(loading);
+    api
+      .historical(latitude, longitude, window.start, window.end, id)
+      .then((result) => {
+        if (!active) return;
+        const points = [...result.points].sort((left, right) => left.date.localeCompare(right.date)).slice(-5);
+        setHistorical({
+          state: points.length ? "ready" : "empty",
+          data: { ...result, points },
+        });
+        setUpdatedAt(new Date());
+      })
+      .catch((reason) => {
+        if (active) setHistorical({ state: "error", error: errorText(reason) });
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedPlace]);
+
+  useEffect(() => {
+    if (!selectedPlace) return;
+    let active = true;
     const { township } = selectedPlace;
+    const today = localToday();
     setOutlook(loading);
-    try {
-      const result = await api.outlook({
-        date: startDate,
+    api
+      .outlook({
+        date: today,
         township_id: township.id,
         latitude: township.latitude,
         longitude: township.longitude,
+      })
+      .then((result) => {
+        if (!active) return;
+        const todayDays = result.days.filter((day) => day.date === today);
+        setOutlook({
+          state: todayDays.length ? "ready" : "empty",
+          data: { ...result, days: todayDays },
+        });
+        setUpdatedAt(new Date());
+      })
+      .catch((reason) => {
+        if (active) setOutlook({ state: "error", error: errorText(reason) });
       });
-      setOutlook({ state: result.days.length ? "ready" : "empty", data: result });
-      if (result.days.some((day) => day.alert_recorded)) {
-        const nextAlerts = await api.alerts();
-        setAlerts({ state: nextAlerts.length ? "ready" : "empty", data: nextAlerts });
-      }
-      setUpdatedAt(new Date());
-    } catch (reason) {
-      setOutlook({ state: "error", error: errorText(reason) });
+    return () => {
+      active = false;
+    };
+  }, [selectedPlace]);
+
+  useEffect(() => {
+    const code = selectedLevel5 || selectedLevel4;
+    if (!code) {
+      setSelectedBoundary(undefined);
+      return;
     }
-  };
+    let active = true;
+    api
+      .adminAreas(code, true)
+      .then((response) => {
+        if (active) setSelectedBoundary(response.areas.find((area) => area.id === code));
+      })
+      .catch(() => {
+        if (active) setSelectedBoundary(undefined);
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedLevel4, selectedLevel5]);
+
+  useEffect(() => {
+    const code = selectedLevel5 || selectedLevel4 || selectedTownship;
+    if (!code) return;
+    let active = true;
+    api
+      .settlements(code)
+      .then((points) => {
+        if (active) {
+          setSettlements({
+            state: points.length ? "ready" : "empty",
+            data: points,
+          });
+        }
+      })
+      .catch((reason) => {
+        if (active) setSettlements({ state: "error", error: errorText(reason) });
+      });
+    return () => {
+      active = false;
+    };
+  }, [selectedLevel4, selectedLevel5, selectedTownship]);
 
   const visibleTownships = useMemo(() => {
     const districts = areas.data?.districts ?? [];
     const shown =
       districtFilter === "all" ? districts : districts.filter((district) => district.id === districtFilter);
-    return shown.flatMap((district) =>
-      district.townships.map((township) => ({
-        ...township,
-        districtId: district.id,
-        districtName: district.name_en,
-        color: districtColor(district.id),
-      })),
-    );
-  }, [areas.data, districtFilter]);
+    const search = placeSearch.trim().toLocaleLowerCase();
+    return shown
+      .flatMap((district) =>
+        district.townships.map((township) => ({
+          ...township,
+          districtId: district.id,
+          districtName: district.name_en,
+          color: districtColor(district.id),
+        })),
+      )
+      .filter(
+        (township) =>
+          !search ||
+          township.name_en.toLocaleLowerCase().includes(search) ||
+          township.name_local.includes(search) ||
+          township.id.toLocaleLowerCase().includes(search),
+      );
+  }, [areas.data, districtFilter, placeSearch]);
 
   const mapPoints = useMemo<[number, number][]>(() => {
     const routePath = route.data?.path.map(
       (point) => [point.latitude, point.longitude] as [number, number],
     );
     if (routePath && routePath.length > 1) return routePath;
+    if (selectedBoundary?.latitude != null && selectedBoundary.longitude != null) {
+      return [[selectedBoundary.latitude, selectedBoundary.longitude]];
+    }
     return visibleTownships.map((township) => [township.latitude, township.longitude]);
-  }, [route.data, visibleTownships]);
+  }, [route.data, selectedBoundary, visibleTownships]);
+
+  const latestHeuristic = useMemo(() => {
+    const seen = new Set<string>();
+    const visibleCodes = new Set(visibleTownships.map((township) => township.id));
+    return (riskResults.data ?? []).filter((row) => {
+      if (
+        row.evidence_type !== "heuristic_risk" ||
+        !row.admin_area_code ||
+        !visibleCodes.has(row.admin_area_code) ||
+        row.latitude == null ||
+        row.longitude == null ||
+        seen.has(row.admin_area_code)
+      ) {
+        return false;
+      }
+      seen.add(row.admin_area_code);
+      return true;
+    });
+  }, [riskResults.data, visibleTownships]);
+
+  const latestModelPredictions = useMemo(() => {
+    const seen = new Set<string>();
+    const visibleCodes = new Set(visibleTownships.map((township) => township.id));
+    return (riskResults.data ?? []).filter((row) => {
+      if (
+        row.evidence_type !== "model_prediction" ||
+        !row.admin_area_code ||
+        !visibleCodes.has(row.admin_area_code) ||
+        row.latitude == null ||
+        row.longitude == null ||
+        seen.has(row.admin_area_code)
+      ) {
+        return false;
+      }
+      seen.add(row.admin_area_code);
+      return true;
+    });
+  }, [riskResults.data, visibleTownships]);
 
   const catalog = useMemo(
     () =>
@@ -307,50 +535,125 @@ function App() {
 
   const chooseTownship = (id: string) => {
     setSelectedTownship(id);
+    setSelectedLevel4("");
+    setSelectedLevel5("");
     const district = areas.data?.districts.find((item) =>
       item.townships.some((township) => township.id === id),
     );
     if (district) setDistrictFilter(district.id);
   };
 
+  const submitManualRun = async (event: FormEvent) => {
+    event.preventDefault();
+    setManualRun(loading);
+    try {
+      const result = await api.runPrediction(adminKey);
+      setManualRun({ state: "ready", data: result });
+      const nextRuns = await api.runs();
+      setRuns({ state: nextRuns.length ? "ready" : "empty", data: nextRuns });
+    } catch (reason) {
+      setManualRun({ state: "error", error: errorText(reason) });
+    }
+  };
+
+  const latestCompletedRun = runs.data?.find(
+    (run) => run.status === "succeeded" || run.status === "partial",
+  );
+  const lastSuccessfulRun = runs.data?.find((run) => run.status === "succeeded");
+  const lastRunAgeHours = lastSuccessfulRun
+    ? (Date.now() - new Date(lastSuccessfulRun.finished_at ?? lastSuccessfulRun.started_at).getTime()) /
+      3_600_000
+    : undefined;
+  const providerRetrievedAt = lastSuccessfulRun?.freshness.retrieved_at;
+  const providerAgeHours =
+    typeof providerRetrievedAt === "string"
+      ? (Date.now() - new Date(providerRetrievedAt).getTime()) / 3_600_000
+      : undefined;
+  const stale =
+    lastRunAgeHours == null ||
+    lastRunAgeHours > 12 ||
+    providerAgeHours == null ||
+    providerAgeHours > 12;
+
+  const regionDays = (historical.data?.points ?? []).slice(-5);
+  const today = localToday();
+  const todayOutlook = outlook.data?.days.find((day) => day.date === today);
+
+  const selectableDistricts =
+    districtFilter === "all"
+      ? (areas.data?.districts ?? [])
+      : (areas.data?.districts ?? []).filter((district) => district.id === districtFilter);
+
   return (
-    <>
-      <header className="topbar">
-        <div>
-          <p className="eyebrow">Bago, Myanmar · Academic prototype</p>
-          <h1>HydroFlow</h1>
-          <p>Flood-risk research dashboard</p>
+    <div className={sidebarOpen ? "shell" : "shell sidebar-closed"}>
+      <aside className="sidebar">
+        <div className="brand">
+          <span className="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 32 32">
+              <path d="M5 20c3.2-4.2 5.2-4.2 8.2 0s5 4.2 8.2 0 5-4.2 8.2 0" />
+              <path d="M5 13c3.2-4.2 5.2-4.2 8.2 0s5 4.2 8.2 0" />
+            </svg>
+          </span>
+          <div className="brand-text">
+            <strong>HydroFlow <em>V1</em></strong>
+            <small>AI Flood Prediction & Early Warning</small>
+          </div>
         </div>
-        <div className={`status ${health.data?.status === "ok" ? "online" : ""}`}>
+        <nav className="sector-nav" aria-label="Dashboard sector">
+          <button
+            type="button"
+            className={sector === "research" ? "active" : ""}
+            aria-pressed={sector === "research"}
+            onClick={() => setSector("research")}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16c2.4-5 4-7 8-7s5.6 2 8 7" /><path d="M4 11c2.4-4 4-5 8-5s5.6 1 8 5" /></svg>
+            <span>Flood Prediction</span>
+          </button>
+          <button
+            type="button"
+            className={sector === "humanitarian" ? "active" : ""}
+            aria-pressed={sector === "humanitarian"}
+            onClick={() => setSector("humanitarian")}
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s7-4.4 7-10a7 7 0 0 0-14 0c0 5.6 7 10 7 10z" /><circle cx="12" cy="11" r="2.2" /></svg>
+            <span>Humanitarian assistance</span>
+          </button>
+        </nav>
+        <div className="sidebar-foot">
+          <time dateTime={updatedAt?.toISOString()}>{updatedAt ? formatDateTime(updatedAt) : "Loading time"}</time>
+          <div className={`status ${health.data?.status === "ok" ? "online" : ""}`}>
+            <span aria-hidden="true" />
+            API {health.state === "loading" ? "checking" : health.data?.status ?? "unavailable"}
+            {health.data && <small>{health.data.service} v{health.data.version}</small>}
+          </div>
+          <p className="side-note">
+            <strong>Safer communities</strong>
+            <span>Bago Region, Myanmar</span>
+          </p>
+        </div>
+      </aside>
+
+      <div className={sector === "research" ? "workspace is-fit" : "workspace"}>
+      <header className="topbar">
+        <button
+          type="button"
+          className="sidebar-toggle"
+          aria-expanded={sidebarOpen}
+          aria-label={sidebarOpen ? "Close sidebar" : "Open sidebar"}
+          onClick={() => setSidebarOpen((open) => !open)}
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M4 7h16M4 12h16M4 17h16" />
+          </svg>
+        </button>
+        <div className="region-pill">
           <span aria-hidden="true" />
-          API {health.state === "loading" ? "checking" : health.data?.status ?? "unavailable"}
-          {health.data && <small>{health.data.service} v{health.data.version}</small>}
+          Bago Region
+        </div>
+        <div className="page-head">
+          <h1>{sector === "research" ? "Flood Prediction" : "Humanitarian assistance"}</h1>
         </div>
       </header>
-
-      <div className="warning" role="alert">
-        <strong>Academic prototype — not an operational warning.</strong>
-        <span> Do not use this dashboard for emergency, public-safety, or humanitarian response decisions.</span>
-      </div>
-
-      <nav className="sector-nav" aria-label="Dashboard sector">
-        <button
-          type="button"
-          className={sector === "research" ? "active" : ""}
-          aria-pressed={sector === "research"}
-          onClick={() => setSector("research")}
-        >
-          Flood research
-        </button>
-        <button
-          type="button"
-          className={sector === "humanitarian" ? "active" : ""}
-          aria-pressed={sector === "humanitarian"}
-          onClick={() => setSector("humanitarian")}
-        >
-          Humanitarian assistance
-        </button>
-      </nav>
 
       {sector === "humanitarian" && (
         <HumanitarianDashboard
@@ -364,19 +667,14 @@ function App() {
       )}
 
       {sector === "research" && (
-      <main>
-        <section className="hero-grid">
+      <main className="predict-board">
           <article className="panel map-panel">
             <div className="section-heading">
               <div>
-                <p className="eyebrow">Bago Region only</p>
                 <h2>Districts and townships</h2>
               </div>
-              <span className="source">Source: 2022 Bago districts</span>
+              <span className="source">Source: {areas.data?.source ?? "versioned geography"}</span>
             </div>
-            <p className="hint">
-              Townships follow the 2022 six-district Bago Region list. Markers are centroids. Click one to predict at that location. They are not a live forecast.
-            </p>
             <div className="chip-row" role="group" aria-label="Bago districts">
               <button
                 type="button"
@@ -390,7 +688,13 @@ function App() {
                   key={district.id}
                   type="button"
                   className={districtFilter === district.id ? "active" : ""}
-                  onClick={() => setDistrictFilter(district.id)}
+                  onClick={() => {
+                  setDistrictFilter(district.id);
+                  if (!district.townships.some((township) => township.id === selectedTownship)) {
+                    const first = district.townships[0];
+                    if (first) chooseTownship(first.id);
+                  }
+                }}
                 >
                   {district.name_en}
                 </button>
@@ -404,10 +708,110 @@ function App() {
               aria-label="Map of Bago Region districts and townships"
             >
               <TileLayer
-                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://openadmindata.org/api/mm/">Open Admin Data</a>'
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · Boundaries: <a href="https://data.humdata.org/dataset/cod-ab-mmr">OCHA FISS / MIMU source</a>, CC BY 3.0 IGO'
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
               />
               <FitPoints points={mapPoints} />
+              {areas.data?.districts.map(
+                (district) =>
+                  district.geometry && (
+                    <GeoJSON
+                      key={`district-${district.id}`}
+                      data={district.geometry as GeoJsonObject}
+                      style={{
+                        color: districtColor(district.id),
+                        weight: 2,
+                        fillOpacity: districtFilter === district.id ? 0.16 : 0.05,
+                      }}
+                    />
+                  ),
+              )}
+              {selectedBoundary?.geometry && (
+                <GeoJSON
+                  key={`selected-admin-${selectedBoundary.id}`}
+                  data={selectedBoundary.geometry as GeoJsonObject}
+                  style={{ color: "#6d3fa0", fillColor: "#9a6bc2", fillOpacity: 0.2, weight: 2 }}
+                >
+                  <Popup>
+                    <strong>{selectedBoundary.name_en}</strong><br />
+                    {selectedBoundary.area_type} · {selectedBoundary.id}<br />
+                    Coverage: {selectedBoundary.coverage_status}
+                  </Popup>
+                </GeoJSON>
+              )}
+              {inundation.data?.map((product) => (
+                <GeoJSON
+                  key={`inundation-${product.id}`}
+                  data={product.geometry as GeoJsonObject}
+                  style={{ color: "#2457a6", fillColor: "#3b82d0", fillOpacity: 0.38, weight: 1 }}
+                >
+                  <Popup>
+                    <strong>Observed satellite inundation</strong><br />
+                    Observed {formatDateTime(product.observed_at)} · {product.quality}<br />
+                    {product.affected_population == null
+                      ? "No exposure estimate imported."
+                      : `${product.affected_population.toLocaleString()} estimated exposed people; not a confirmed affected count.`}
+                  </Popup>
+                </GeoJSON>
+              ))}
+              {latestHeuristic.map((result) => (
+                <CircleMarker
+                  key={`risk-${result.id}`}
+                  center={[result.latitude as number, result.longitude as number]}
+                  radius={16}
+                  pathOptions={{
+                    color: riskColor(result.risk_level),
+                    fillColor: riskColor(result.risk_level),
+                    fillOpacity: 0.2,
+                    weight: 2,
+                  }}
+                >
+                  <Popup>
+                    <strong>{result.admin_area_name}</strong><br />
+                    Heuristic risk: {result.risk_level}<br />
+                    Valid {formatDateTime(result.valid_at)} · +{result.forecast_horizon_hours} h<br />
+                    Provisional rule, not a probability or official warning.
+                  </Popup>
+                </CircleMarker>
+              ))}
+              {latestModelPredictions.map((result) => (
+                <CircleMarker
+                  key={`model-risk-${result.id}`}
+                  center={[result.latitude as number, result.longitude as number]}
+                  radius={10}
+                  pathOptions={{
+                    color: "#6d3fa0",
+                    fillColor: "#9a6bc2",
+                    fillOpacity: 0.08,
+                    weight: 2,
+                    dashArray: "4 3",
+                  }}
+                >
+                  <Popup>
+                    <strong>{result.admin_area_name}</strong><br />
+                    Legacy model score:{" "}
+                    {result.probability == null
+                      ? "unavailable"
+                      : result.probability.toFixed(3)}<br />
+                    Valid {formatDateTime(result.valid_at)} · +{result.forecast_horizon_hours} h<br />
+                    Uncalibrated academic score, not an official warning.
+                  </Popup>
+                </CircleMarker>
+              ))}
+              {settlements.data?.map((settlement) => (
+                <CircleMarker
+                  key={`settlement-${settlement.id}`}
+                  center={[settlement.latitude, settlement.longitude]}
+                  radius={3}
+                  pathOptions={{ color: "#3f5965", fillColor: "#ffffff", fillOpacity: 0.9, weight: 1 }}
+                >
+                  <Popup>
+                    <strong>{settlement.name_en}</strong><br />
+                    {settlement.settlement_type} · {settlement.source_code}<br />
+                    {settlement.note}
+                  </Popup>
+                </CircleMarker>
+              ))}
               {route.data && route.data.path.length > 1 && (
                 <Polyline
                   positions={route.data.path.map(
@@ -427,7 +831,7 @@ function App() {
                     fillOpacity: 0.9,
                     weight: township.id === selectedTownship ? 3 : 1,
                   }}
-                  eventHandlers={{ click: () => setSelectedTownship(township.id) }}
+                  eventHandlers={{ click: () => chooseTownship(township.id) }}
                 >
                   <Popup>
                     <strong>{township.name_en}</strong>
@@ -442,255 +846,127 @@ function App() {
               ))}
             </MapContainer>
             <div className="legend">
-              {areas.data?.districts.map((district) => (
-                <span key={district.id}>
-                  <i style={{ background: districtColor(district.id) }} />
-                  {district.name_en} · {district.townships.length}{" "}
-                  {district.townships.length === 1 ? "township" : "townships"}
-                </span>
-              ))}
+              <span><i style={{ background: "#3b82d0" }} />Observed satellite inundation</span>
+              <span><i style={{ background: "#d86a1a" }} />Provisional heuristic ring</span>
+              <span><i style={{ background: "#9a6bc2" }} />Uncalibrated flood-model ring</span>
             </div>
           </article>
 
-          <article className="panel">
+          <article className="panel form-panel">
             <div className="section-heading">
               <div>
-                <p className="eyebrow">Model request</p>
-                <h2>Prediction</h2>
+                <p className="eyebrow">{today}</p>
+                <h2>Flood prediction</h2>
               </div>
-              <span className="source">Source: /outlook</span>
+              <span className="source">{selectedPlace?.township.name_en ?? "Township"}</span>
             </div>
-            <p className="hint">Forecast rainfall comes from Open-Meteo and discharge from GloFAS. Nothing is typed in by hand.</p>
-            <form onSubmit={submitOutlook}>
-              <div className="form-grid">
-                <label>Start date<input type="date" value={startDate} onChange={(event) => setStartDate(event.target.value)} required /></label>
-                <label>Township
-                  <select
-                    value={selectedTownship}
-                    onChange={(event) => chooseTownship(event.target.value)}
-                    required
-                    disabled={!selectedPlace}
-                  >
-                    {!selectedPlace && <option value="">Loading Bago townships…</option>}
-                    {areas.data?.districts.map((district) => (
-                      <optgroup key={district.id} label={`${district.name_en} District`}>
-                        {district.townships.map((township) => (
-                          <option key={township.id} value={township.id}>{township.name_en}</option>
-                        ))}
-                      </optgroup>
+            <label>Township
+              <select
+                value={selectedTownship}
+                onChange={(event) => chooseTownship(event.target.value)}
+                required
+                disabled={!selectedPlace}
+              >
+                {!selectedPlace && <option value="">Loading townships…</option>}
+                {selectableDistricts.map((district) => (
+                  <optgroup key={district.id} label={`${district.name_en} District`}>
+                    {district.townships.map((township) => (
+                      <option key={township.id} value={township.id}>{township.name_en}</option>
                     ))}
-                  </select>
-                </label>
-              </div>
-              <button type="submit" disabled={outlook.state === "loading" || !selectedPlace}>
-                {outlook.state === "loading" ? "Loading API days…" : "Load API outlook"}
-              </button>
-            </form>
-            {selectedPlace && (
-              <p className="place-note">
-                {selectedPlace.township.name_en}, {selectedPlace.district.name_en} District ·{" "}
-                {selectedPlace.township.latitude.toFixed(4)}, {selectedPlace.township.longitude.toFixed(4)}
-              </p>
-            )}
-            <ElevationNote resource={topography} />
-            <StateMessage resource={outlook} empty="Choose a start date to load the API outlook." />
-            {outlook.state === "ready" && (
-              <div className="history-table" role="table" aria-label="API outlook">
-                <div className="history-row outlook header" role="row"><span>Date</span><span>Rain</span><span>Discharge</span><span>Probability</span><span>Risk</span></div>
-                {outlook.data?.days.map((day) => (
-                  <div className="history-row outlook" role="row" key={day.date}>
-                    <strong>{day.date}</strong>
-                    <span>{valueOrDash(day.precipitation_mm, "mm")}</span>
-                    <span>{valueOrDash(day.discharge_m3_s, "m³/s")}</span>
-                    <span>{(day.flood_probability * 100).toFixed(1)}%</span>
-                    <span className={`risk-pill risk-${day.risk_level}`}>{day.risk_level}</span>
-                  </div>
+                  </optgroup>
                 ))}
-              </div>
-            )}
-          </article>
-        </section>
-
-        <section className="panel route-panel">
-          <div className="section-heading">
-            <div>
-              <p className="eyebrow">Kardinal</p>
-              <h2>Relief route</h2>
-            </div>
-            <span className="source">Source: /routes</span>
-          </div>
-          <p className="hint">
-            Plans one delivery round from the selected township. Stops use Open Admin Data
-            administrative centroids, not road addresses, so the order and distance are a research
-            illustration. A production key spends one Kardinal credit per stop.
-          </p>
-          <form onSubmit={submitRoute}>
-            <fieldset className="stop-picker">
-              <legend>Delivery townships</legend>
-              {catalog
-                .filter((township) => township.id !== selectedTownship)
-                .map((township) => (
-                  <label key={township.id}>
-                    <input
-                      type="checkbox"
-                      checked={routeStops.includes(township.id)}
-                      onChange={() => toggleRouteStop(township.id)}
-                    />
-                    {township.name_en}
-                    <small>{township.districtName}</small>
-                  </label>
-                ))}
-            </fieldset>
-            <div className="route-options">
-              <label>
-                Vehicle
-                <select
-                  value={vehicleProfile}
-                  onChange={(event) => setVehicleProfile(event.target.value as "car" | "truck" | "fly")}
+              </select>
+            </label>
+            <div className="slot-row" role="tablist" aria-label="Prediction times">
+              {PREDICTION_SLOTS.map((slot) => (
+                <button
+                  key={slot}
+                  type="button"
+                  role="tab"
+                  className={predictionSlot === slot ? "active" : ""}
+                  aria-selected={predictionSlot === slot}
+                  onClick={() => setPredictionSlot(slot)}
                 >
-                  <option value="car">Car, road network</option>
-                  <option value="truck">Truck, road network</option>
-                  <option value="fly">Straight line</option>
-                </select>
-              </label>
-              <label>
-                Minutes at each stop
-                <input
-                  type="number"
-                  min={0}
-                  max={180}
-                  value={serviceMinutes}
-                  onChange={(event) => setServiceMinutes(Number(event.target.value))}
-                />
-              </label>
-              <label className="check-line">
-                <input
-                  type="checkbox"
-                  checked={returnToOrigin}
-                  onChange={(event) => setReturnToOrigin(event.target.checked)}
-                />
-                Return to the origin
-              </label>
+                  {slot}
+                </button>
+              ))}
             </div>
-            <button type="submit" disabled={route.state === "loading" || routeStops.length === 0}>
-              {route.state === "loading" ? "Planning route…" : "Plan relief route"}
-            </button>
-          </form>
-          <StateMessage resource={route} empty="Choose delivery townships to plan a route." />
-          {route.state === "ready" && route.data && (
-            <>
-              <p className="place-note">
-                {route.data.distance_km == null ? "Distance unavailable" : `${route.data.distance_km.toLocaleString()} km`}
-                {route.data.duration_minutes == null
-                  ? ""
-                  : ` · ${Math.round(route.data.duration_minutes).toLocaleString()} min`}
-                {" · "}
-                {route.data.state}
-                {route.data.agency_id ? ` · ${route.data.agency_id}` : ""}
-              </p>
-              {route.data.waypoints.length === 0 ? (
-                <p className="hint">Kardinal returned no planned stops.</p>
-              ) : (
-                <ol className="assumption-list">
-                  {route.data.waypoints.map((point, index) => (
-                    <li key={point.stop_id}>
-                      {index + 1}. {point.name}
-                      {point.arrival_time ? ` · ${formatDateTime(point.arrival_time)}` : ""}
-                    </li>
-                  ))}
-                </ol>
-              )}
-              <p className="hint">{route.data.disclaimer}</p>
-              <ul className="assumption-list">
-                {route.data.assumptions.map((note) => (
-                  <li key={note}>{note}</li>
-                ))}
-              </ul>
-              {route.data.unaffected_stop_ids.length > 0 && (
-                <p className="hint">Unplanned stops: {route.data.unaffected_stop_ids.join(", ")}</p>
-              )}
-            </>
-          )}
-        </section>
+            <StateMessage resource={outlook} empty="No prediction for the current day." />
+            {outlook.state === "ready" && todayOutlook && (
+              <div className="slot-page" role="tabpanel" aria-label={`${today} ${predictionSlot}`}>
+                <p className="eyebrow">{today} · {predictionSlot} MMT</p>
+                <div className="result-grid">
+                  <div>
+                    <span>Flood chance</span>
+                    <strong>{(todayOutlook.flood_probability * 100).toFixed(0)}%</strong>
+                  </div>
+                  <div>
+                    <span>Risk</span>
+                    <strong className={`risk-pill risk-${todayOutlook.risk_level}`}>{todayOutlook.risk_level}</strong>
+                  </div>
+                  <div>
+                    <span>Rainfall</span>
+                    <strong>{valueOrDash(todayOutlook.precipitation_mm, "mm")}</strong>
+                  </div>
+                  <div>
+                    <span>Discharge</span>
+                    <strong>{valueOrDash(todayOutlook.discharge_m3_s, "m³/s")}</strong>
+                  </div>
+                  <div>
+                    <span>Temperature</span>
+                    <strong>{valueOrDash(todayOutlook.temperature_c, "°C")}</strong>
+                  </div>
+                  <div>
+                    <span>Humidity</span>
+                    <strong>{valueOrDash(todayOutlook.relative_humidity_pct, "%")}</strong>
+                  </div>
+                </div>
+              </div>
+            )}
+          </article>
 
-        <section className="data-grid">
-          <article className="panel">
-            <div className="section-heading"><div><p className="eyebrow">Expected conditions</p><h2>Forecast</h2></div><span className="source">Source: /forecast</span></div>
-            <StateMessage resource={forecast} empty="No forecast points returned." />
-            {forecast.state === "ready" && (
-              <div className="list">
-                {forecast.data?.points.slice(0, 5).map((point) => (
-                  <div className="row" key={point.timestamp}>
-                    <strong>{formatDateTime(point.timestamp)}</strong>
-                    <span>{valueOrDash(point.precipitation_mm, "mm rain")}</span>
-                    <span>{valueOrDash(point.discharge_m3_s, "m³/s")}</span>
+          <article className="panel history-panel">
+            <div className="section-heading">
+              <div>
+                <h2>Previous 5 days</h2>
+              </div>
+            </div>
+            <StateMessage resource={historical} empty="No stored days for this township." />
+            {historical.state === "ready" && (
+              <div className="history-table" role="table" aria-label="Previous five days">
+                <div className="history-row region header" role="row">
+                  <span>Date</span>
+                  <span>Rainfall</span>
+                  <span>Temperature</span>
+                  <span>Humidity</span>
+                </div>
+                {regionDays.map((point) => (
+                  <div className="history-row region" role="row" key={point.date}>
+                    <strong>{point.date}</strong>
+                    <span>{valueOrDash(point.precipitation_mm, "mm")}</span>
+                    <span>{valueOrDash(point.temperature_c, "°C")}</span>
+                    <span>{valueOrDash(point.relative_humidity_pct, "%")}</span>
                   </div>
                 ))}
               </div>
             )}
           </article>
 
-          <article className="panel">
-            <div className="section-heading"><div><p className="eyebrow">Prototype notices</p><h2>Alerts</h2></div><span className="source">Source: /alerts</span></div>
-            <StateMessage resource={alerts} empty="No prototype alerts returned." />
-            {alerts.state === "ready" && (
-              <div className="list">
-                {alerts.data?.map((alert) => (
-                  <div className="alert-row" key={alert.id}>
-                    <span className={`risk-pill risk-${alert.level}`}>{alert.level}</span>
-                    <div><strong>{alert.message}</strong><small>{formatDateTime(alert.issued_at)} · Source: {alert.source}</small></div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </article>
-        </section>
-
-        <section className="panel historical">
-          <div className="section-heading"><div><p className="eyebrow">Relief records</p><h2>Recorded flood days</h2></div><span className="source">Source: /flood-history</span></div>
-          <p className="hint">These are recorded Bago relief impacts, not model predictions.</p>
-          <StateMessage resource={floodHistory} empty="No recorded flood days returned." />
-          {floodHistory.state === "ready" && (
-            <div className="history-table" role="table" aria-label="Recorded Bago flood days">
-              <div className="history-row records header" role="row"><span>Date</span><span>Township</span><span>Households</span><span>People</span><span>Impact</span></div>
-              {floodHistory.data?.records.map((record) => (
-                <div className="history-row records" role="row" key={`${record.date}-${record.township_id}`}>
-                  <strong>{record.date}</strong>
-                  <span>{record.township}</span>
-                  <span>{record.households == null ? "—" : record.households.toLocaleString()}</span>
-                  <span>{record.affected_people == null ? "—" : record.affected_people.toLocaleString()}</span>
-                  <span className={`risk-pill risk-${record.impact_severity}`}>{record.impact_severity}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
-
-        <section className="panel historical">
-          <div className="section-heading"><div><p className="eyebrow">Observed archive</p><h2>Historical data</h2></div><span className="source">Source: /historical</span></div>
-          <StateMessage resource={historical} empty="No historical observations returned." />
-          {historical.state === "ready" && (
-            <div className="history-table" role="table" aria-label="Historical weather observations">
-              <div className="history-row header" role="row"><span>Date</span><span>Rainfall</span><span>Temperature</span><span>Humidity</span></div>
-              {historical.data?.points.slice(0, 8).map((point) => (
-                <div className="history-row" role="row" key={point.date}>
-                  <strong>{point.date}</strong>
-                  <span>{valueOrDash(point.precipitation_mm, "mm")}</span>
-                  <span>{valueOrDash(point.temperature_c, "°C")}</span>
-                  <span>{valueOrDash(point.relative_humidity_pct, "%")}</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </section>
       </main>
       )}
 
       <footer>
         <span>HydroFlow V1 · Research use only</span>
-        <span>Dashboard fetched: {updatedAt ? formatDateTime(updatedAt) : "pending"}</span>
+        <span>
+          Last successful run:{" "}
+          {lastSuccessfulRun
+            ? formatDateTime(lastSuccessfulRun.finished_at ?? lastSuccessfulRun.started_at)
+            : "never"}{" "}
+          · Dashboard fetched: {updatedAt ? formatDateTime(updatedAt) : "pending"}
+        </span>
       </footer>
-    </>
+      </div>
+    </div>
   );
 }
 
