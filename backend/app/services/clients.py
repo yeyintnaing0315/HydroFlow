@@ -1,3 +1,4 @@
+import asyncio
 import os
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -8,6 +9,8 @@ import httpx
 from app.schemas.api import ForecastPoint, HistoricalPoint
 
 TIMEOUT_SECONDS = 10.0
+NASA_POWER_TIMEOUT_SECONDS = 45.0
+NASA_POWER_PARAMETERS = "PRECTOTCORR,T2M,RH2M,WS2M"
 POINT_ELEVATION_URL = "https://portal.opentopography.org/API/v1/elevation"
 ELEVATION_DATASET = "COP30"
 _elevation_cache: dict[tuple[float, float, str], dict[str, float | str]] = {}
@@ -62,7 +65,7 @@ async def nasa_power_history(
     latitude: float, longitude: float, start: date, end: date
 ) -> list[HistoricalPoint]:
     params = {
-        "parameters": "PRECTOTCORR,T2M,RH2M",
+        "parameters": NASA_POWER_PARAMETERS,
         "community": "AG",
         "longitude": longitude,
         "latitude": latitude,
@@ -71,7 +74,7 @@ async def nasa_power_history(
         "format": "JSON",
         "time-standard": "UTC",
     }
-    async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
+    async with httpx.AsyncClient(timeout=NASA_POWER_TIMEOUT_SECONDS) as client:
         response = await client.get("https://power.larc.nasa.gov/api/temporal/daily/point", params=params)
         response.raise_for_status()
     try:
@@ -79,13 +82,15 @@ async def nasa_power_history(
         precipitation = values["PRECTOTCORR"]
         temperature = values["T2M"]
         humidity = values["RH2M"]
-        keys = sorted(set(precipitation) | set(temperature) | set(humidity))
+        wind = values.get("WS2M") or {}
+        keys = sorted(set(precipitation) | set(temperature) | set(humidity) | set(wind))
         return [
             HistoricalPoint(
                 date=datetime.strptime(key, "%Y%m%d").date(),
                 precipitation_mm=_number(precipitation.get(key)),
                 temperature_c=_number(temperature.get(key)),
                 relative_humidity_pct=_number(humidity.get(key)),
+                wind_speed_m_s=_number(wind.get(key)) if wind else None,
             )
             for key in keys
         ]
@@ -97,9 +102,10 @@ async def open_meteo_forecast(latitude: float, longitude: float) -> list[Forecas
     params = {
         "latitude": latitude,
         "longitude": longitude,
-        "hourly": "temperature_2m,precipitation",
+        "hourly": "temperature_2m,precipitation,relative_humidity_2m,wind_speed_10m",
         "forecast_days": 7,
         "timezone": "UTC",
+        "wind_speed_unit": "ms",
     }
     async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
         response = await client.get("https://api.open-meteo.com/v1/forecast", params=params)
@@ -109,13 +115,17 @@ async def open_meteo_forecast(latitude: float, longitude: float) -> list[Forecas
         times = hourly["time"]
         precipitation = hourly["precipitation"]
         temperature = hourly["temperature_2m"]
-        if not (len(times) == len(precipitation) == len(temperature)):
+        humidity = hourly.get("relative_humidity_2m") or [None] * len(times)
+        wind = hourly.get("wind_speed_10m") or [None] * len(times)
+        if not (len(times) == len(precipitation) == len(temperature) == len(humidity) == len(wind)):
             raise ValueError
         return [
             ForecastPoint(
                 timestamp=datetime.fromisoformat(timestamp).replace(tzinfo=timezone.utc),
                 precipitation_mm=_number(precipitation[index]),
                 temperature_c=_number(temperature[index]),
+                relative_humidity_pct=_number(humidity[index]),
+                wind_speed_m_s=_number(wind[index]),
             )
             for index, timestamp in enumerate(times)
         ]
@@ -123,14 +133,38 @@ async def open_meteo_forecast(latitude: float, longitude: float) -> list[Forecas
         raise ValueError("Invalid Open-Meteo forecast response") from exc
 
 
+async def _request_json(url: str, params: dict[str, object], timeout: float = 20.0) -> dict[str, Any]:
+    last_error: Exception | None = None
+    for delay in (0, 8, 20):
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.get(url, params=params)
+                if response.status_code in {429, 503}:
+                    last_error = httpx.HTTPStatusError(
+                        f"{response.status_code} {response.reason_phrase}",
+                        request=response.request,
+                        response=response,
+                    )
+                    continue
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError(f"Invalid JSON object from {url}")
+                return payload
+        except (httpx.HTTPError, ValueError) as exc:
+            last_error = exc
+    assert last_error is not None
+    raise last_error
+
+
 async def _daily_values(
     url: str, params: dict[str, object], value_key: str
 ) -> list[tuple[date, float | None]]:
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        response = await client.get(url, params=params)
-        response.raise_for_status()
+    payload = await _request_json(url, params)
     try:
-        daily = response.json()["daily"]
+        daily = payload["daily"]
         times = daily["time"]
         values = daily[value_key]
         if len(times) != len(values):
@@ -158,6 +192,45 @@ async def open_meteo_daily_precipitation(
         },
         "precipitation_sum",
     )
+
+
+async def open_meteo_daily_weather(
+    latitude: float, longitude: float, past_days: int = 62, forecast_days: int = 7
+) -> list[dict[str, date | float | None]]:
+    """Daily rainfall plus meteorology from the Open-Meteo forecast/reanalysis API."""
+    params = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "daily": "precipitation_sum,temperature_2m_mean,relative_humidity_2m_mean,wind_speed_10m_mean",
+        "past_days": past_days,
+        "forecast_days": forecast_days,
+        "timezone": "UTC",
+        "wind_speed_unit": "ms",
+    }
+    payload = await _request_json("https://api.open-meteo.com/v1/forecast", params)
+    try:
+        daily = payload["daily"]
+        times = daily["time"]
+        rainfall = daily["precipitation_sum"]
+        temperature = daily["temperature_2m_mean"]
+        humidity = daily["relative_humidity_2m_mean"]
+        wind = daily["wind_speed_10m_mean"]
+        if not (
+            len(times) == len(rainfall) == len(temperature) == len(humidity) == len(wind)
+        ):
+            raise ValueError
+        return [
+            {
+                "date": datetime.fromisoformat(timestamp).date(),
+                "rainfall_mm": _number(rainfall[index]),
+                "temperature_c": _number(temperature[index]),
+                "relative_humidity_pct": _number(humidity[index]),
+                "wind_speed_m_s": _number(wind[index]),
+            }
+            for index, timestamp in enumerate(times)
+        ]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Invalid Open-Meteo daily weather response") from exc
 
 
 async def glofas_daily_discharge(

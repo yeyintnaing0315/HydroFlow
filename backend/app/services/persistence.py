@@ -4,8 +4,8 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.models import Alert, Location, Observation
-from app.schemas.api import AlertCreate
+from app.models import Alert, HistoricalDay, Location, Observation
+from app.schemas.api import AlertCreate, HistoricalPoint
 
 
 def get_or_create_location(
@@ -77,3 +77,74 @@ def list_observations(
             Observation.observed_at <= datetime.combine(end, time.max, timezone.utc)
         )
     return list(session.scalars(statement))
+
+
+def upsert_historical_days(
+    session: Session,
+    location_key: str,
+    latitude: float,
+    longitude: float,
+    points: list[HistoricalPoint],
+    source: str = "nasa-power",
+) -> int:
+    """Store API history so later requests can read the same days from the database."""
+    retrieved_at = datetime.now(timezone.utc)
+    written = 0
+    for point in points:
+        existing = session.scalar(
+            select(HistoricalDay).where(
+                HistoricalDay.location_key == location_key,
+                HistoricalDay.observed_on == point.date,
+            )
+        )
+        if existing is None:
+            session.add(
+                HistoricalDay(
+                    location_key=location_key,
+                    latitude=latitude,
+                    longitude=longitude,
+                    observed_on=point.date,
+                    precipitation_mm=point.precipitation_mm,
+                    temperature_c=point.temperature_c,
+                    relative_humidity_pct=point.relative_humidity_pct,
+                    wind_speed_m_s=point.wind_speed_m_s,
+                    source=source,
+                    retrieved_at=retrieved_at,
+                )
+            )
+        else:
+            existing.latitude = latitude
+            existing.longitude = longitude
+            existing.precipitation_mm = point.precipitation_mm
+            existing.temperature_c = point.temperature_c
+            existing.relative_humidity_pct = point.relative_humidity_pct
+            existing.wind_speed_m_s = point.wind_speed_m_s
+            existing.source = source
+            existing.retrieved_at = retrieved_at
+        written += 1
+    session.commit()
+    return written
+
+
+def list_historical_days(
+    session: Session, location_key: str, start: date, end: date
+) -> list[HistoricalPoint]:
+    rows = session.scalars(
+        select(HistoricalDay)
+        .where(
+            HistoricalDay.location_key == location_key,
+            HistoricalDay.observed_on >= start,
+            HistoricalDay.observed_on <= end,
+        )
+        .order_by(HistoricalDay.observed_on)
+    )
+    return [
+        HistoricalPoint(
+            date=row.observed_on,
+            precipitation_mm=row.precipitation_mm,
+            temperature_c=row.temperature_c,
+            relative_humidity_pct=row.relative_humidity_pct,
+            wind_speed_m_s=row.wind_speed_m_s,
+        )
+        for row in rows
+    ]

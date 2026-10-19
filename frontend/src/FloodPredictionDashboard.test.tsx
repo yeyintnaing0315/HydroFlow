@@ -1,0 +1,200 @@
+import { fireEvent, render, screen, within } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import FloodPredictionDashboard from "./FloodPredictionDashboard";
+import { riskLabel } from "./components/prediction/mapUtils";
+
+vi.mock("react-leaflet", () => ({
+  MapContainer: ({ children }: { children: React.ReactNode }) => <div data-testid="map">{children}</div>,
+  TileLayer: ({ url, attribution }: { url?: string; attribution?: string }) => (
+    <div data-testid="basemap" data-url={url} data-attribution={attribution} />
+  ),
+  CircleMarker: () => null,
+  Popup: () => null,
+  GeoJSON: () => null,
+  Pane: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
+  useMap: () => ({
+    fitBounds: () => undefined,
+    invalidateSize: () => undefined,
+    getSize: () => ({ x: 800, y: 600 }),
+    getContainer: () => document.createElement("div"),
+  }),
+}));
+
+vi.mock("./api", () => ({
+  api: {
+    predictionTimeline: vi.fn().mockResolvedValue({
+      township_id: "MMR007001701",
+      as_of: "2026-10-19",
+      timezone: "Asia/Yangon",
+      model_version: "test",
+      in_training_set: true,
+      generated_at: "2026-10-10T00:00:00Z",
+      potentially_exposed_population: 1000,
+      disclaimer: "Test",
+      days: [
+        {
+          date: "2026-10-18",
+          period_type: "historical",
+          flood_probability: 0.35,
+          predicted_flood: false,
+          probability_risk_level: "moderate",
+          risk_level: "moderate",
+          hydrology_risk_score: 40,
+          hydrology_risk_level: "moderate",
+          rainfall_mm: 20,
+          discharge_m3_s: 50,
+          impact_level: "unknown",
+          potentially_exposed_population: 1000,
+          potentially_affected_population: null,
+          observed_flood: false,
+          recorded_affected_people: null,
+          data_status: "model_estimate",
+          evidence_type: "model_prediction",
+          probability_status: "uncalibrated_academic_score",
+          forecast_horizon_hours: 0,
+          input_freshness: {},
+          uncertainty: "",
+          key_factors: [],
+        },
+        {
+          date: "2026-10-19",
+          period_type: "current",
+          flood_probability: 0.21,
+          predicted_flood: false,
+          probability_risk_level: "low",
+          risk_level: "low",
+          hydrology_risk_score: 20,
+          hydrology_risk_level: "low",
+          rainfall_mm: 10,
+          discharge_m3_s: 30,
+          impact_level: "unknown",
+          potentially_exposed_population: 1000,
+          potentially_affected_population: null,
+          observed_flood: null,
+          recorded_affected_people: null,
+          data_status: "model_estimate",
+          evidence_type: "model_prediction",
+          probability_status: "uncalibrated_academic_score",
+          forecast_horizon_hours: 0,
+          input_freshness: {},
+          uncertainty: "",
+          key_factors: [],
+        },
+        {
+          date: "2026-10-20",
+          period_type: "forecast",
+          flood_probability: 0.55,
+          predicted_flood: true,
+          probability_risk_level: "high",
+          risk_level: "high",
+          hydrology_risk_score: 60,
+          hydrology_risk_level: "high",
+          rainfall_mm: 30,
+          discharge_m3_s: 70,
+          relative_humidity_pct: 71,
+          impact_level: "unknown",
+          potentially_exposed_population: 1000,
+          potentially_affected_population: null,
+          observed_flood: null,
+          recorded_affected_people: null,
+          data_status: "model_estimate",
+          evidence_type: "model_prediction",
+          probability_status: "uncalibrated_academic_score",
+          forecast_horizon_hours: 24,
+          input_freshness: {},
+          uncertainty: "",
+          key_factors: [],
+        },
+      ],
+    }),
+    predictionMapScores: vi.fn().mockResolvedValue({
+      date: "2026-10-10",
+      model_version: "test",
+      cached: false,
+      scores: [],
+    }),
+  },
+}));
+
+const areas = {
+  state: "ready" as const,
+  data: {
+    source: "test",
+    dataset_version: "v1",
+    license: "test",
+    coverage_note: "",
+    region_id: "MMR007",
+    region_name_en: "Bago",
+    region_name_local: "Bago",
+    latitude: 18,
+    longitude: 96,
+    districts: [
+      {
+        id: "MMR007D001",
+        slug: "bago",
+        name_en: "Bago",
+        name_local: "Bago",
+        latitude: 17.6,
+        longitude: 96.6,
+        level: 2,
+        area_type: "district",
+        coverage_status: "complete",
+        townships: [
+          {
+            id: "MMR007001701",
+            slug: "bago-township",
+            name_en: "Bago",
+            name_local: "Bago",
+            latitude: 17.3358,
+            longitude: 96.4839,
+            level: 3,
+            area_type: "township",
+            coverage_status: "complete",
+          },
+        ],
+      },
+    ],
+  },
+};
+
+describe("FloodPredictionDashboard", () => {
+  it("maps moderate risk to Medium label", () => {
+    expect(riskLabel("moderate")).toBe("Medium");
+  });
+
+  it("shows the map, compact day metrics, and both day groups", async () => {
+    render(
+      <FloodPredictionDashboard
+        areas={areas}
+        health={{ state: "ready", data: { status: "ok", service: "x", version: "1", database: { ready: true, missing_tables: [] }, models: { flood: true, help: true, allocation: true } } }}
+        runs={{ state: "empty" }}
+        inundation={{ state: "empty" }}
+        settlements={{ state: "empty" }}
+      />,
+    );
+    expect(await screen.findByRole("heading", { name: "Districts" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Previous 7 days" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Next 7 days" })).toBeInTheDocument();
+    expect(screen.getByTestId("map")).toBeInTheDocument();
+    expect(screen.getByTestId("basemap")).toHaveAttribute("data-url", "https://tile.openstreetmap.org/{z}/{x}/{y}.png");
+    expect(screen.getByTestId("basemap")).toHaveAttribute("data-attribution", "© OpenStreetMap contributors");
+
+    expect(await screen.findByRole("button", { name: /2026-10-18/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /2026-10-20/ }));
+
+    const metrics = await screen.findByRole("table", { name: "Joined flood outlook" });
+    expect(within(metrics).getByText("Flood chance")).toBeInTheDocument();
+    expect(within(metrics).getByText("55%")).toBeInTheDocument();
+    expect(within(metrics).getByText("Risk")).toBeInTheDocument();
+    expect(within(metrics).getByText("High")).toBeInTheDocument();
+    expect(within(metrics).getByText("Rainfall")).toBeInTheDocument();
+    expect(within(metrics).getByText("30.0 mm")).toBeInTheDocument();
+    expect(within(metrics).getByText("Discharge")).toBeInTheDocument();
+    expect(within(metrics).getByText(/70\.0/)).toBeInTheDocument();
+    expect(within(metrics).getByText("Humidity")).toBeInTheDocument();
+    expect(within(metrics).getByText("71 %")).toBeInTheDocument();
+    expect(screen.queryByText("Temperature")).not.toBeInTheDocument();
+    expect(screen.queryByText("Heuristic risk")).not.toBeInTheDocument();
+    expect(screen.queryByText("Flood in next 3 days")).not.toBeInTheDocument();
+  });
+});

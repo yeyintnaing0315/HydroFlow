@@ -8,12 +8,106 @@ vi.mock("react-leaflet", () => ({
   CircleMarker: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Popup: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
   Polyline: () => null,
+  GeoJSON: () => <div data-testid="geojson" />,
+  Pane: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
   useMap: () => ({ fitBounds: () => undefined }),
 }));
 
 vi.mock("./api", () => ({
   api: {
-    health: vi.fn().mockResolvedValue({ status: "ok", service: "hydroflow-api", version: "0.1.0" }),
+    health: vi.fn().mockResolvedValue({
+      status: "ok",
+      service: "hydroflow-api",
+      version: "0.2.0",
+      database: { ready: true, missing_tables: [], revision: "20261015_0001" },
+      models: { flood: true, help: true, allocation: true },
+    }),
+    runs: vi.fn().mockResolvedValue([]),
+    inundationProducts: vi.fn().mockResolvedValue([]),
+    settlements: vi.fn().mockResolvedValue([]),
+    inventory: vi.fn().mockResolvedValue({ region: "east", location: "Bago East", classes: [], movements: [] }),
+    allocationPlan: vi.fn().mockResolvedValue({
+      plan_id: "p1",
+      planning_date: "2026-10-19",
+      warehouse: { id: "east", name: "Bago East", region: "east", latitude: 17.336, longitude: 96.481 },
+      totals: { affected_population: 8500, available_stock_units: 1200, resources_needed_units: 900 },
+      rows: [],
+      shortages: [],
+      routes: [],
+      model_version: "flood-help-v2",
+      disclaimer: "Academic planning aid.",
+    }),
+    predictionTimeline: vi.fn().mockResolvedValue({
+      township_id: "MMR007001701",
+      as_of: "2026-10-19",
+      timezone: "Asia/Yangon",
+      model_version: "test",
+      in_training_set: true,
+      generated_at: "2026-10-19T00:00:00Z",
+      potentially_exposed_population: 1000,
+      disclaimer: "Test",
+      days: [
+        {
+          date: "2026-10-18",
+          period_type: "historical",
+          flood_probability: 0.1,
+          predicted_flood: false,
+          probability_risk_level: "low",
+          risk_level: "low",
+          rainfall_mm: 7.1,
+          discharge_m3_s: 0.2,
+          relative_humidity_pct: 80,
+          impact_level: "unknown",
+          data_status: "model_estimate",
+          evidence_type: "model_prediction",
+          key_factors: [],
+          input_freshness: {},
+          uncertainty: "",
+          forecast_horizon_hours: 0,
+        },
+        {
+          date: "2026-10-19",
+          period_type: "current",
+          flood_probability: 0,
+          predicted_flood: false,
+          probability_risk_level: "low",
+          risk_level: "low",
+          rainfall_mm: 0.9,
+          discharge_m3_s: 0.2,
+          relative_humidity_pct: 88,
+          impact_level: "unknown",
+          data_status: "model_estimate",
+          evidence_type: "model_prediction",
+          key_factors: [],
+          input_freshness: {},
+          uncertainty: "",
+          forecast_horizon_hours: 0,
+        },
+        {
+          date: "2026-10-20",
+          period_type: "forecast",
+          flood_probability: 0.55,
+          predicted_flood: true,
+          probability_risk_level: "high",
+          risk_level: "high",
+          rainfall_mm: 30,
+          discharge_m3_s: 70,
+          impact_level: "unknown",
+          data_status: "model_estimate",
+          evidence_type: "model_prediction",
+          key_factors: [],
+          input_freshness: {},
+          uncertainty: "",
+          forecast_horizon_hours: 24,
+        },
+      ],
+    }),
+    predictionMapScores: vi.fn().mockResolvedValue({
+      date: "2026-10-19",
+      model_version: "test",
+      cached: false,
+      scores: [],
+    }),
     forecast: vi.fn().mockResolvedValue({ latitude: 17.336, longitude: 96.481, points: [] }),
     alerts: vi.fn().mockResolvedValue([]),
     topography: vi.fn().mockResolvedValue({
@@ -60,7 +154,10 @@ vi.mock("./api", () => ({
       { township_id: "bago", township: "Bago", latitude: 17.335, longitude: 96.481 },
     ]),
     bagoAreas: vi.fn().mockResolvedValue({
-      source: "Open Admin Data",
+      source: "OCHA Myanmar COD-AB v01",
+      dataset_version: "COD-AB-v01-2024-02-15",
+      license: "CC BY 3.0 IGO",
+      coverage_note: "Admin 4 and 5 coverage is partial.",
       region_id: "MMR007",
       region_name_en: "Bago",
       region_name_local: "ပဲခူးတိုင်းဒေသကြီး",
@@ -74,6 +171,9 @@ vi.mock("./api", () => ({
           name_local: "ပဲခူးခရိုင်",
           latitude: 17.6768,
           longitude: 96.6216,
+          level: 2,
+          area_type: "district",
+          coverage_status: "complete",
           townships: [
             {
               id: "MMR007001701",
@@ -82,6 +182,9 @@ vi.mock("./api", () => ({
               name_local: "ပဲခူး",
               latitude: 17.3358,
               longitude: 96.4839,
+              level: 3,
+              area_type: "township",
+              coverage_status: "complete",
             },
           ],
         },
@@ -92,6 +195,9 @@ vi.mock("./api", () => ({
           name_local: "ပြည်ခရိုင်",
           latitude: 18.696,
           longitude: 95.3295,
+          level: 2,
+          area_type: "district",
+          coverage_status: "complete",
           townships: [
             {
               id: "MMR008001",
@@ -100,12 +206,50 @@ vi.mock("./api", () => ({
               name_local: "ပြည်",
               latitude: 18.817,
               longitude: 95.217,
+              level: 3,
+              area_type: "township",
+              coverage_status: "complete",
             },
           ],
         },
       ],
     }),
-    outlook: vi.fn(),
+    outlook: vi.fn().mockResolvedValue({
+      township_id: "MMR007001701",
+      source: "joined forecast",
+      model_version: "hist_gradient_boosting",
+      in_training_set: true,
+      days: [
+        {
+          date: new Date(Date.now() - new Date().getTimezoneOffset() * 60_000).toISOString().slice(0, 10),
+          precipitation_mm: 12,
+          discharge_m3_s: 40,
+          temperature_c: 28,
+          relative_humidity_pct: 71,
+          flood_probability: 0.21,
+          predicted_flood: false,
+          risk_score: 0.3,
+          risk_level: "low",
+          alert_recorded: false,
+          forecast_horizon_hours: 0,
+          evidence_type: "model_prediction",
+          probability_status: "uncalibrated_academic_score",
+          input_freshness: {},
+          uncertainty: "",
+        },
+      ],
+    }),
+    sources: vi.fn().mockResolvedValue([]),
+    officialWarnings: vi.fn().mockResolvedValue([]),
+    riskResults: vi.fn().mockResolvedValue([]),
+    adminAreas: vi.fn().mockResolvedValue({
+      source: "OCHA Myanmar COD-AB v01",
+      dataset_version: "COD-AB-v01-2024-02-15",
+      license: "CC BY 3.0 IGO",
+      coverage_note: "Admin 4 and 5 coverage is partial.",
+      areas: [],
+    }),
+    runPrediction: vi.fn(),
     census: vi.fn().mockResolvedValue({
       source: "2024 Population and Housing Census, Bago Region tables",
       source_file: "data/2024_census_bago_report (update).xlsx",
@@ -254,44 +398,35 @@ afterEach(() => {
 });
 
 describe("dashboard", () => {
-  it("labels demo data and warns against operational use", async () => {
+  it("renders the HydroFlow shell and opens flood prediction", async () => {
     render(<App />);
 
-    expect(screen.getByRole("alert")).toHaveTextContent("not an operational warning");
-    expect(screen.getByText(/Open-Meteo/)).toBeInTheDocument();
-    expect(screen.getByText(/GloFAS/i)).toBeInTheDocument();
     expect(await screen.findByText("API ok", {}, { timeout: 8000 })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Flood Prediction" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Resource Allocation" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Inventory Management" })).toBeInTheDocument();
+    expect(screen.getByText(/Flood prediction to relief dispatch/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Flood Prediction" }));
+    expect(await screen.findByRole("heading", { name: "Districts" })).toBeInTheDocument();
     expect(screen.getByTestId("map")).toBeInTheDocument();
-    expect(await screen.findByText(/2022 Bago districts/)).toBeInTheDocument();
-    expect(screen.getByText(/six-district Bago Region list/)).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "Bago" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "Pyay" })).toBeInTheDocument();
-    expect(screen.getAllByText(/Bago District/).length).toBeGreaterThan(0);
-    expect(screen.getByText("2025-10-02")).toBeInTheDocument();
-    expect(screen.getByText(/not a live forecast/i)).toBeInTheDocument();
-    expect(await screen.findByText(/18\.4 m from OpenTopography/)).toBeInTheDocument();
-    expect(screen.getByText(/The flood model does not use this value/)).toBeInTheDocument();
-    expect(await screen.findByText("Humidity")).toBeInTheDocument();
-    expect(screen.getByText(/80\s*%/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Humanitarian assistance" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Plan relief route" })).toBeDisabled();
-    expect(screen.getByText(/administrative centroids/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Previous 7 days" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Flood prediction" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close sidebar" }));
+    expect(screen.getByRole("button", { name: "Open sidebar" })).toBeInTheDocument();
   }, 20000);
 
-  it("opens the humanitarian assistance sector", async () => {
+  it("opens inventory and resource allocation", async () => {
     render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "Humanitarian assistance" }));
+    fireEvent.click(screen.getByRole("button", { name: "Inventory Management" }));
+    expect((await screen.findAllByRole("heading", { name: "Inventory Management" })).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "+ Add Item" })).toBeInTheDocument();
 
-    expect(await screen.findByRole("heading", { name: "Flood help planning" })).toBeInTheDocument();
-    expect(await screen.findByText("4,453,687")).toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: "Bago population" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Bago District age groups" })).toBeInTheDocument();
-    expect(await screen.findByText("12")).toBeInTheDocument();
-    expect(screen.getByText(/Recorded impacts, not flood-help model predictions/)).toBeInTheDocument();
-    expect(await screen.findByRole("option", { name: "Bago" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "Estimate flood help" }));
-    expect(await screen.findByText("42.0%")).toBeInTheDocument();
-    expect(screen.getByText("180 L")).toBeInTheDocument();
-    expect(screen.getByText(/Keep a small relief watch/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Resource Allocation" }));
+    expect(await screen.findByRole("heading", { name: "Resource allocation list" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Generate allocation plan" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Check inventory" })).toBeInTheDocument();
   });
 });

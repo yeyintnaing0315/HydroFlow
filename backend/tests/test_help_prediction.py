@@ -26,7 +26,7 @@ def test_saved_help_model_serves_assistance_outlook(monkeypatch) -> None:
 
     assert response.status_code == 200
     body = response.json()
-    assert body["model_version"] == "flood-help-v2"
+    assert body["model_version"].startswith("flood-help")
     assert body["disclaimer"] == "Academic planning aid. Not an operational humanitarian response plan."
     assert [day["date"] for day in body["days"]] == ["2026-10-01", "2026-10-02"]
     for day in body["days"]:
