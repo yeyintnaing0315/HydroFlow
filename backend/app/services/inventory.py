@@ -8,7 +8,14 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import BagoEastBalance, BagoEastMovement, BagoWestBalance, BagoWestMovement
+from app.models import (
+    BagoEastBalance,
+    BagoEastMovement,
+    BagoWestBalance,
+    BagoWestMovement,
+    InventoryCategory,
+    InventoryItemType,
+)
 
 CATEGORIES: tuple[dict[str, object], ...] = (
     {"code": "clothes", "name": "Clothes", "entry_mode": "scan_or_manual", "sort_order": 1},
@@ -45,8 +52,17 @@ ITEM_TYPES: dict[str, tuple[tuple[str, str, str, int], ...]] = {
 }
 
 
+CLASS_CAPACITY = Decimal("5000")
+FUND_CAPACITY = Decimal("10000000")
+
+
 class InventoryError(ValueError):
     """A stock change that breaks the class rules."""
+
+
+def stock_capacity(category_code: str) -> Decimal:
+    """Clothes, foods, and utility share one 5,000 cap. Fund has its own."""
+    return FUND_CAPACITY if category_code == "fund" else CLASS_CAPACITY
 
 
 REGIONS = {
@@ -61,6 +77,47 @@ REGIONS = {
         "movement": BagoWestMovement,
     },
 }
+
+
+def seed_catalog(session: Session) -> None:
+    """Insert the shared classes. Fund has no subclass rows."""
+    for spec in CATEGORIES:
+        existing = session.scalar(
+            select(InventoryCategory).where(InventoryCategory.code == spec["code"])
+        )
+        if existing is None:
+            session.add(
+                InventoryCategory(
+                    code=str(spec["code"]),
+                    name=str(spec["name"]),
+                    entry_mode=str(spec["entry_mode"]),
+                    sort_order=int(spec["sort_order"]),
+                )
+            )
+    session.flush()
+    categories = {
+        row.code: row for row in session.scalars(select(InventoryCategory))
+    }
+    for category_code, types in ITEM_TYPES.items():
+        category = categories[category_code]
+        for code, name, unit, order in types:
+            existing = session.scalar(
+                select(InventoryItemType).where(
+                    InventoryItemType.category_id == category.id,
+                    InventoryItemType.code == code,
+                )
+            )
+            if existing is None:
+                session.add(
+                    InventoryItemType(
+                        category_id=category.id,
+                        code=code,
+                        name=name,
+                        unit=unit,
+                        sort_order=order,
+                    )
+                )
+    session.flush()
 
 
 def seed_regions(session: Session) -> None:
@@ -145,6 +202,7 @@ def region_snapshot(session: Session, region: str) -> dict[str, object]:
                 "name": str(category["name"]),
                 "entry_mode": str(category["entry_mode"]),
                 "quantity": sum(item["quantity"] for item in items),
+                "capacity": float(stock_capacity(code)),
                 "items": items,
             }
         )
@@ -227,6 +285,13 @@ def add_region_stock(
     balance = session.scalar(statement)
     if balance is None:
         raise InventoryError("Stock row is missing for this class")
+    _guard_capacity(
+        session,
+        balance_model,
+        category_code,
+        amount,
+        direction,
+    )
     current = Decimal(balance.quantity)
     updated = current + amount if direction == "in" else current - amount
     if updated < 0:
@@ -245,3 +310,22 @@ def add_region_stock(
     )
     session.flush()
     return region_snapshot(session, region)
+
+
+def _guard_capacity(
+    session: Session,
+    balance_model: type,
+    category_code: str,
+    amount: Decimal,
+    direction: str,
+) -> None:
+    """Block a receipt that would push the whole class over its maximum."""
+    if direction != "in":
+        return
+    cap = stock_capacity(category_code)
+    held = session.scalars(
+        select(balance_model).where(balance_model.category_code == category_code)
+    )
+    total = sum((Decimal(row.quantity) for row in held), Decimal("0"))
+    if total + amount > cap:
+        raise InventoryError(f"{_class_name(category_code)} is limited to {int(cap)}")

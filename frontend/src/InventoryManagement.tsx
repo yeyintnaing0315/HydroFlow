@@ -1,137 +1,210 @@
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { api } from "./api";
+import type { InventoryClass, InventorySnapshot } from "./types";
 
-type Category = "Food" | "Clothes" | "Utensils" | "Tents" | "Other";
-type StockStatus = "In Stock" | "Low Stock" | "Out of Stock";
-type LocationName = "Bago East" | "Bago West";
+type RegionCode = "east" | "west";
+type StockStatus = "Out of Stock" | "Critical" | "Low Stock" | "In Stock" | "Full";
 type SortKey = "name" | "category" | "quantity" | "status";
 
-interface InventoryItem {
-  id: string;
+interface Resource<T> {
+  state: "loading" | "ready" | "error";
+  data?: T;
+  error?: string;
+}
+
+interface StockRow {
+  key: string;
   name: string;
-  category: Category;
+  itemCode: string | null;
+  classCode: string;
+  className: string;
   quantity: number;
   unit: string;
   status: StockStatus;
-  location: LocationName;
-  reorderPct: number;
-  summaryUnits: number;
+  fill: number;
 }
 
-interface StockUpdate {
-  id: string;
+interface DetectionView {
+  category_code: string;
+  item_code: string;
+  quantity: number;
   name: string;
-  change: string;
-  positive: boolean;
-  at: string;
-  team: string;
-  location: LocationName;
+  unit: string;
 }
 
-const CATEGORIES: Category[] = ["Food", "Clothes", "Utensils", "Tents", "Other"];
-const LOCATIONS: LocationName[] = ["Bago East", "Bago West"];
-const CARD_CATEGORIES: { key: Category; label: string; tone: string }[] = [
-  { key: "Clothes", label: "Clothes", tone: "clothes" },
-  { key: "Utensils", label: "Utensils", tone: "utensils" },
-  { key: "Tents", label: "Tents", tone: "tents" },
-  { key: "Food", label: "Foods", tone: "foods" },
+const LOCATIONS: { region: RegionCode; label: "Bago East" | "Bago West" }[] = [
+  { region: "east", label: "Bago East" },
+  { region: "west", label: "Bago West" },
 ];
 
-const SEED_ITEMS: InventoryItem[] = [
-  { id: "rice", name: "Rice Bags", category: "Food", quantity: 2500, unit: "kg", status: "In Stock", location: "Bago East", reorderPct: 80, summaryUnits: 488 },
-  { id: "water", name: "Drinking Water", category: "Food", quantity: 1200, unit: "L", status: "In Stock", location: "Bago East", reorderPct: 70, summaryUnits: 0 },
-  { id: "clothes", name: "Clothes", category: "Clothes", quantity: 450, unit: "pcs", status: "Low Stock", location: "Bago East", reorderPct: 55, summaryUnits: 320 },
-  { id: "utensils", name: "Cooking Utensils", category: "Utensils", quantity: 320, unit: "pcs", status: "In Stock", location: "Bago East", reorderPct: 27, summaryUnits: 260 },
-  { id: "tents", name: "Tents", category: "Tents", quantity: 120, unit: "pcs", status: "Low Stock", location: "Bago East", reorderPct: 24, summaryUnits: 180 },
-  { id: "meds", name: "Medicine Kits", category: "Other", quantity: 300, unit: "pcs", status: "In Stock", location: "Bago East", reorderPct: 62, summaryUnits: 0 },
-  { id: "blankets", name: "Blankets", category: "Other", quantity: 450, unit: "pcs", status: "In Stock", location: "Bago East", reorderPct: 68, summaryUnits: 0 },
-  { id: "generators", name: "Generators", category: "Other", quantity: 15, unit: "units", status: "Low Stock", location: "Bago East", reorderPct: 40, summaryUnits: 0 },
-  { id: "fuel", name: "Fuel (L)", category: "Other", quantity: 600, unit: "L", status: "Out of Stock", location: "Bago East", reorderPct: 18, summaryUnits: 0 },
-  { id: "flash", name: "Flashlights", category: "Other", quantity: 200, unit: "pcs", status: "In Stock", location: "Bago East", reorderPct: 50, summaryUnits: 0 },
-  { id: "west-rice", name: "Rice Bags", category: "Food", quantity: 800, unit: "kg", status: "In Stock", location: "Bago West", reorderPct: 64, summaryUnits: 120 },
-  { id: "west-water", name: "Drinking Water", category: "Food", quantity: 400, unit: "L", status: "In Stock", location: "Bago West", reorderPct: 58, summaryUnits: 60 },
-  { id: "west-clothes", name: "Clothes", category: "Clothes", quantity: 150, unit: "pcs", status: "In Stock", location: "Bago West", reorderPct: 48, summaryUnits: 80 },
-  { id: "west-tents", name: "Tents", category: "Tents", quantity: 40, unit: "pcs", status: "Low Stock", location: "Bago West", reorderPct: 22, summaryUnits: 40 },
-];
+const CLASS_ORDER = ["clothes", "foods", "utility", "fund"];
+const CLASS_CAPACITY = 5000;
+const FUND_CAPACITY = 10_000_000;
 
-const SEED_UPDATES: StockUpdate[] = [
-  { id: "u1", name: "Rice Bags", change: "+500 kg", positive: true, at: "Oct 16, 2026 09:42 AM", team: "Field Team", location: "Bago East" },
-  { id: "u2", name: "Clothes", change: "-50 pcs", positive: false, at: "Oct 16, 2026 08:30 AM", team: "Distribution Team", location: "Bago East" },
-  { id: "u3", name: "Drinking Water", change: "+200 L", positive: true, at: "Oct 15, 2026 06:15 PM", team: "Warehouse", location: "Bago East" },
-  { id: "u4", name: "Tents", change: "-20 pcs", positive: false, at: "Oct 15, 2026 02:10 PM", team: "Distribution Team", location: "Bago East" },
-  { id: "u5", name: "Medicine Kits", change: "+100 pcs", positive: true, at: "Oct 14, 2026 11:30 AM", team: "NGO Partner", location: "Bago East" },
-  { id: "u6", name: "Fuel (L)", change: "+600 L", positive: true, at: "Oct 14, 2026 09:00 AM", team: "Warehouse", location: "Bago East" },
-  { id: "u7", name: "Tents", change: "-10 pcs", positive: false, at: "Oct 15, 2026 04:20 PM", team: "Field Team", location: "Bago West" },
-];
+const STATUS_RANK: Record<StockStatus, number> = {
+  "Out of Stock": 0,
+  Critical: 1,
+  "Low Stock": 2,
+  "In Stock": 3,
+  Full: 4,
+};
 
-function statusFor(quantity: number): StockStatus {
+const errorText = (reason: unknown) =>
+  reason instanceof Error ? reason.message : "Unexpected request failure";
+
+function classRank(code: string): number {
+  const index = CLASS_ORDER.indexOf(code);
+  return index === -1 ? CLASS_ORDER.length : index;
+}
+
+function classCapacity(row: InventoryClass): number {
+  if (row.capacity && row.capacity > 0) return row.capacity;
+  return row.code === "fund" ? FUND_CAPACITY : CLASS_CAPACITY;
+}
+
+function fillRatio(quantity: number, capacity: number): number {
+  if (quantity <= 0 || capacity <= 0) return 0;
+  return (quantity / capacity) * 100;
+}
+
+function displayPercent(quantity: number, capacity: number): number {
+  const ratio = fillRatio(quantity, capacity);
+  if (ratio <= 0) return 0;
+  const rounded = Math.round(ratio);
+  return Math.min(100, rounded === 0 ? 1 : rounded);
+}
+
+function statusFor(quantity: number, capacity: number): StockStatus {
   if (quantity <= 0) return "Out of Stock";
-  if (quantity < 100) return "Low Stock";
-  return "In Stock";
+  const ratio = fillRatio(quantity, capacity);
+  if (ratio < 30) return "Critical";
+  if (ratio < 60) return "Low Stock";
+  if (ratio < 100) return "In Stock";
+  return "Full";
 }
 
-function unitFor(category: Category, name: string): string {
-  const label = name.toLowerCase();
-  if (label.includes("water") || label.includes("fuel")) return "L";
-  if (category === "Food") return "kg";
-  if (label.includes("generator")) return "units";
-  return "pcs";
+function statusSlug(status: StockStatus): string {
+  return status.replace(/\s+/g, "-").toLowerCase();
 }
 
-function formatWhen(value: Date): string {
+function formatWhen(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
     year: "numeric",
     hour: "numeric",
     minute: "2-digit",
-  }).format(value);
+  }).format(date);
 }
 
-function joinNames(names: string[]): string {
-  if (names.length === 0) return "";
-  if (names.length === 1) return names[0];
-  if (names.length === 2) return `${names[0]} and ${names[1]}`;
-  return `${names.slice(0, -1).join(", ")}, and ${names[names.length - 1]}`;
+function pillClass(code: string): string {
+  if (code === "foods") return "cat-foods";
+  if (code === "clothes") return "cat-clothes";
+  if (code === "utility") return "cat-utility";
+  if (code === "fund") return "cat-fund";
+  return "cat-other";
 }
 
-function ItemGlyph({ name }: { name: string }) {
-  const key = name.toLowerCase();
-  const tone = key.includes("rice")
-    ? "amber"
-    : key.includes("water")
-      ? "blue"
-      : key.includes("cloth")
-        ? "sky"
-        : key.includes("utensil")
-          ? "orange"
-          : key.includes("tent")
-            ? "purple"
-            : key.includes("medicine")
-              ? "green"
-              : key.includes("blanket")
-                ? "indigo"
-                : key.includes("generator")
-                  ? "slate"
-                  : key.includes("fuel")
-                    ? "red"
-                    : "yellow";
+function toneClass(code: string): string {
+  if (code === "clothes") return "tone-clothes";
+  if (code === "foods") return "tone-foods";
+  if (code === "utility") return "tone-utility";
+  if (code === "fund") return "tone-fund";
+  return "tone-total";
+}
+
+function unitLabel(unit: string): string {
+  return unit.toLowerCase() === "mmk" ? "MMK" : unit;
+}
+
+function subclassLabel(
+  snapshot: InventorySnapshot | undefined,
+  categoryCode: string,
+  itemCode: string,
+): { name: string; unit: string } {
+  const item = snapshot?.classes
+    .find((row) => row.code === categoryCode)
+    ?.items.find((entry) => entry.code === itemCode);
+  return { name: item?.name ?? itemCode, unit: item?.unit ?? "" };
+}
+
+function captureFrame(video: HTMLVideoElement): Promise<Blob> {
+  const width = video.videoWidth;
+  const height = video.videoHeight;
+  if (!width || !height) {
+    return Promise.reject(new Error("The camera frame is not ready yet."));
+  }
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+  if (!context) return Promise.reject(new Error("Could not capture a frame."));
+  context.drawImage(video, 0, 0, width, height);
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (!blob) reject(new Error("Could not capture a frame."));
+      else resolve(blob);
+    }, "image/jpeg", 0.92);
+  });
+}
+
+function Glyph({ tone, compact, children }: { tone: string; compact?: boolean; children: ReactNode }) {
   return (
-    <span className={`item-glyph tone-${tone}`} aria-hidden="true">
-      <svg viewBox="0 0 24 24">
-        {key.includes("rice") && <path d="M7 9h10l-1 10H8L7 9zm1-3h8l1 3H7l1-3z" />}
-        {key.includes("water") && <path d="M9 3h6v2l1 3v12a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2V8l1-3V3zm2 7v7h2v-7h-2z" />}
-        {key.includes("cloth") && <path d="M8 7l4-3 4 3v3l3 2-2 2-1-1v7H8V13l-1 1-2-2 3-2V7z" />}
-        {key.includes("utensil") && <path d="M8 4v7a2 2 0 0 0 4 0V4M10 11v9M16 4c1.5 2 2 4 2 6s-.8 3-2 3v7" />}
-        {key.includes("tent") && <path d="M3 19 12 5l9 14H3zm9-8v8" />}
-        {key.includes("medicine") && <path d="M8 4h8v6H8zM7 10h10v8a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2v-8zm5 3v4m-2-2h4" />}
-        {key.includes("blanket") && <path d="M5 7h14v10H5zM8 7v10M12 7v10M16 7v10" />}
-        {key.includes("generator") && <path d="M5 8h14v9H5zM8 8V6h8v2M9 12h2M13 12h2M12 17v2" />}
-        {key.includes("fuel") && <path d="M8 4h6v16H8zM14 8h2a2 2 0 0 1 2 2v4a2 2 0 0 1-2 2h-2" />}
-        {!key.match(/rice|water|cloth|utensil|tent|medicine|blanket|generator|fuel/) && (
-          <path d="M9 6h6l1 3v9H8V9l1-3zm2 3v6h2V9h-2z" />
-        )}
-      </svg>
+    <span className={`item-glyph tone-${tone}${compact ? " is-compact" : ""}`} aria-hidden="true">
+      <svg viewBox="0 0 24 24">{children}</svg>
     </span>
+  );
+}
+
+function TotalItemsIcon({ compact = false }: { compact?: boolean }) {
+  return (
+    <Glyph tone="slate" compact={compact}>
+      <path d="M4 8h7v7H4zM13 8h7v7h-7zM8 15h7v5H8z" />
+    </Glyph>
+  );
+}
+
+function ClassGlyph({ classCode, compact = false }: { classCode: string; compact?: boolean }) {
+  const tone = classCode === "clothes" ? "sky" : classCode === "foods" ? "amber" : classCode === "fund" ? "green" : "orange";
+  return (
+    <Glyph tone={tone} compact={compact}>
+      {classCode === "clothes" && <path d="M8 7l4-3 4 3v3l3 2-2 2-1-1v7H8V13l-1 1-2-2 3-2V7z" />}
+      {classCode === "foods" && <path d="M7 9h10l-1 10H8L7 9zm1-3h8l1 3H7l1-3z" />}
+      {classCode === "fund" && <path d="M5 8h14v9H5zM8 8V6h8v2M9 12h6" />}
+      {classCode !== "clothes" && classCode !== "foods" && classCode !== "fund" && (
+        <path d="M5 7h14v10H5zM8 7v10M12 7v10M16 7v10" />
+      )}
+    </Glyph>
+  );
+}
+
+function ItemGlyph({ itemCode, compact = false }: { itemCode: string | null; compact?: boolean }) {
+  const key = itemCode ?? "fund";
+  const tone = key.includes("cloth") || key === "tshirt" ? "sky" : key === "rice" || key === "oil" || key === "can" ? "amber" : "orange";
+  return (
+    <Glyph tone={tone} compact={compact}>
+      {key === "tshirt" && <path d="M8 6l4-2 4 2 3 2-2 2h-2v8H9V10H7L5 8z" />}
+      {key === "m_cloth" && <path d="M8 5h8l2 3v12H6V8zM10 5v3h4V5" />}
+      {key === "f_cloth" && <path d="M9 4h6l3 4-2 2v10H8V10L6 8z" />}
+      {key === "rice" && <path d="M7 9h10l-1 10H8zM8 6h8l1 3H7z" />}
+      {key === "oil" && <path d="M9 3h6v3l1 2v12H8V8l1-2z" />}
+      {key === "can" && <path d="M8 6h8v12H8zM8 6c0-1 8-1 8 0M8 18c0 1 8 1 8 0" />}
+      {key === "blanket" && <path d="M5 7h14v10H5zM8 7v10M12 7v10M16 7v10" />}
+      {key === "soap" && <path d="M7 9h10v8H7zM9 9V7h6v2" />}
+      {key === "cup" && <path d="M8 6h6v9a3 3 0 0 1-6 0zM14 8h2a2 2 0 0 1 0 4h-2" />}
+      {key === "spoon" && <path d="M10 4c2 2 2 4 0 6l1 8h2l1-8c-2-2-2-4 0-6" />}
+      {key === "mug" && <path d="M7 7h8v8a3 3 0 0 1-3 3H10a3 3 0 0 1-3-3zM15 9h2a2 2 0 0 1 0 4h-2" />}
+      {key === "box" && <path d="M4 8l8-3 8 3-8 3zM4 8v8l8 3V11M20 8v8l-8 3" />}
+      {key === "towel" && <path d="M7 4h10v16H7zM9 4v16" />}
+      {key === "plate" && <path d="M5 12a7 7 0 1 0 14 0 7 7 0 0 0-14 0zm3 0a4 4 0 1 0 8 0" />}
+      {key === "netbed" && <path d="M4 10h16v6H4zM6 10V7h4M18 10V7h-4M4 16v2M20 16v2" />}
+      {key === "knife" && <path d="M14 4l4 2-8 10H6l8-12zM8 16l2 4" />}
+      {key === "bowl" && <path d="M5 10h14c0 5-3 8-7 8s-7-3-7-8z" />}
+      {key === "pot" && <path d="M6 10h12v7H6zM4 10h16M9 10V7M15 10V7" />}
+      {key === "fund" && <path d="M5 8h14v9H5zM8 8V6h8v2M9 12h6" />}
+    </Glyph>
   );
 }
 
@@ -146,37 +219,61 @@ function CubeIcon() {
 }
 
 export default function InventoryManagement() {
-  const [items, setItems] = useState<InventoryItem[]>(SEED_ITEMS);
-  const [updates, setUpdates] = useState<StockUpdate[]>(SEED_UPDATES);
-  const [location, setLocation] = useState<LocationName>("Bago East");
-  const [category, setCategory] = useState<Category | "all">("all");
+  const [region, setRegion] = useState<RegionCode>("east");
+  const [resource, setResource] = useState<Resource<InventorySnapshot>>({ state: "loading" });
+  const [classFilter, setClassFilter] = useState<string>("all");
   const [status, setStatus] = useState<StockStatus | "all">("all");
-  const [restockOnly, setRestockOnly] = useState(false);
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<SortKey | null>(null);
   const [sortAsc, setSortAsc] = useState(true);
-  const [menuId, setMenuId] = useState<string | null>(null);
   const [showAllUpdates, setShowAllUpdates] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [detecting, setDetecting] = useState(false);
   const [cameraError, setCameraError] = useState("");
   const [stream, setStream] = useState<MediaStream | null>(null);
-  const [itemName, setItemName] = useState("");
-  const [itemCategory, setItemCategory] = useState<Category | "">("");
-  const [itemQuantity, setItemQuantity] = useState("");
-  const [detectedName, setDetectedName] = useState("");
-  const [detectedCategory, setDetectedCategory] = useState<Category | "">("");
-  const [detectedQuantity, setDetectedQuantity] = useState("1");
+  const [manualClass, setManualClass] = useState("");
+  const [manualItem, setManualItem] = useState("");
+  const [manualQuantity, setManualQuantity] = useState("");
+  const [detectClass, setDetectClass] = useState("");
+  const [detection, setDetection] = useState<DetectionView | null>(null);
   const [formError, setFormError] = useState("");
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const tableRef = useRef<HTMLDivElement | null>(null);
+  const regionRef = useRef(region);
+  const snapshotRef = useRef<InventorySnapshot | undefined>(undefined);
+  const streamRef = useRef<MediaStream | null>(null);
+  const mounted = useRef(true);
+  regionRef.current = region;
+  snapshotRef.current = resource.data;
+  streamRef.current = stream;
 
-  const stopCamera = () => {
+  const stopCamera = useCallback(() => {
     setStream((current) => {
       current?.getTracks().forEach((track) => track.stop());
       return null;
     });
-  };
+  }, []);
+
+  const closeAdd = useCallback(() => {
+    stopCamera();
+    setAddOpen(false);
+    setDetecting(false);
+    setCameraError("");
+    setFormError("");
+    setManualClass("");
+    setManualItem("");
+    setManualQuantity("");
+    setDetectClass("");
+    setDetection(null);
+  }, [stopCamera]);
+
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      streamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
 
   useEffect(() => {
     const node = videoRef.current;
@@ -192,59 +289,90 @@ export default function InventoryManagement() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [addOpen]);
+  }, [addOpen, closeAdd]);
 
-  const closeAdd = () => {
-    stopCamera();
-    setAddOpen(false);
-    setDetecting(false);
-    setCameraError("");
-    setFormError("");
-    setItemName("");
-    setItemCategory("");
-    setItemQuantity("");
-    setDetectedName("");
-    setDetectedCategory("");
-    setDetectedQuantity("1");
-  };
+  useEffect(() => {
+    let active = true;
+    setResource({ state: "loading" });
+    api.inventory(region)
+      .then((data) => {
+        if (active) setResource({ state: "ready", data });
+      })
+      .catch((reason: unknown) => {
+        if (active) setResource({ state: "error", error: errorText(reason) });
+      });
+    return () => {
+      active = false;
+    };
+  }, [region]);
 
-  const located = useMemo(
-    () => items.filter((item) => item.location === location),
-    [items, location],
-  );
+  const classes = useMemo(() => {
+    const rows = resource.data?.classes ?? [];
+    return [...rows].sort((left, right) => classRank(left.code) - classRank(right.code));
+  }, [resource.data]);
 
-  const cards = useMemo(() => {
-    const counts = { Food: 0, Clothes: 0, Utensils: 0, Tents: 0, Other: 0 };
-    for (const item of located) counts[item.category] += item.summaryUnits;
-    const total = Object.values(counts).reduce((sum, value) => sum + value, 0);
-    return { counts, total };
-  }, [located]);
+  const rows = useMemo<StockRow[]>(() => {
+    return classes.flatMap((row) => {
+      const capacity = classCapacity(row);
+      const status = statusFor(row.quantity, capacity);
+      const fill = displayPercent(row.quantity, capacity);
+      return row.items.map((item) => ({
+        key: `${row.code}:${item.code ?? "fund"}`,
+        name: item.name,
+        itemCode: item.code,
+        classCode: row.code,
+        className: row.name,
+        quantity: item.quantity,
+        unit: item.unit,
+        status,
+        fill,
+      }));
+    });
+  }, [classes]);
 
   const visible = useMemo(() => {
     const search = query.trim().toLowerCase();
-    const rows = located.filter((item) => {
-      if (category !== "all" && item.category !== category) return false;
+    const filtered = rows.filter((item) => {
+      if (classFilter !== "all" && item.classCode !== classFilter) return false;
       if (status !== "all" && item.status !== status) return false;
-      if (restockOnly && item.reorderPct >= 30) return false;
       if (!search) return true;
-      return `${item.name} ${item.category} ${item.location}`.toLowerCase().includes(search);
+      return `${item.name} ${item.className} ${item.unit}`.toLowerCase().includes(search);
     });
-    if (!sortKey) return rows;
-    const statusRank: Record<StockStatus, number> = { "In Stock": 0, "Low Stock": 1, "Out of Stock": 2 };
-    return [...rows].sort((left, right) => {
+    if (!sortKey) return filtered;
+    const statusRank = STATUS_RANK;
+    return [...filtered].sort((left, right) => {
       const dir = sortAsc ? 1 : -1;
       if (sortKey === "quantity") return (left.quantity - right.quantity) * dir;
       if (sortKey === "status") return (statusRank[left.status] - statusRank[right.status]) * dir;
-      return left[sortKey].localeCompare(right[sortKey]) * dir;
+      if (sortKey === "category") return left.className.localeCompare(right.className) * dir;
+      return left.name.localeCompare(right.name) * dir;
     });
-  }, [located, category, status, restockOnly, query, sortKey, sortAsc]);
+  }, [rows, classFilter, status, query, sortKey, sortAsc]);
 
-  const alerts = located.filter((item) => item.reorderPct < 30);
-  const locationUpdates = updates.filter((update) => update.location === location);
-  const shownUpdates = showAllUpdates ? locationUpdates : locationUpdates.slice(0, 4);
-  const suggestion = alerts.length
-    ? `Stock levels for ${joinNames(alerts.map((item) => item.name))} are below 30%. Consider restocking soon based on forecasted demand.`
-    : "Stock levels for this location are above the 30% restock line.";
+  const movements = resource.data?.movements ?? [];
+  const shownUpdates = showAllUpdates ? movements : movements.slice(0, 4);
+  const goods = classes.filter((row) => row.code !== "fund");
+  const totalQuantity = goods.reduce((sum, row) => sum + row.quantity, 0);
+  const totalCapacity = goods.reduce((sum, row) => sum + classCapacity(row), 0) || CLASS_CAPACITY * 3;
+  const totalStatus = statusFor(totalQuantity, totalCapacity);
+  const totalFill = displayPercent(totalQuantity, totalCapacity);
+  const restock = [
+    ...(fillRatio(totalQuantity, totalCapacity) < 30
+      ? [{ key: "total", name: "Total items", classCode: "total", status: totalStatus, fill: totalFill }]
+      : []),
+    ...classes
+      .filter((row) => fillRatio(row.quantity, classCapacity(row)) < 30)
+      .map((row) => ({
+        key: row.code,
+        name: row.name,
+        classCode: row.code,
+        status: statusFor(row.quantity, classCapacity(row)),
+        fill: displayPercent(row.quantity, classCapacity(row)),
+      })),
+  ];
+  const manualSelected = classes.find((row) => row.code === manualClass);
+  const manualIsFund = manualSelected?.code === "fund" || manualSelected?.entry_mode === "manual_only";
+  const detectClasses = classes.filter((row) => row.code !== "fund" && row.entry_mode !== "manual_only");
 
   const toggleSort = (key: SortKey) => {
     if (sortKey === key) setSortAsc((current) => !current);
@@ -254,77 +382,56 @@ export default function InventoryManagement() {
     }
   };
 
-  const addItem = (name: string, nextCategory: Category, quantity: number) => {
-    const unit = unitFor(nextCategory, name);
-    const next: InventoryItem = {
-      id: `item-${Date.now()}`,
-      name,
-      category: nextCategory,
-      quantity,
-      unit,
-      status: statusFor(quantity),
-      location,
-      reorderPct: quantity <= 0 ? 0 : quantity < 100 ? 22 : 100,
-      summaryUnits: Math.max(quantity, 0),
-    };
-    setItems((current) => [next, ...current]);
-    setUpdates((current) => [
-      {
-        id: `update-${Date.now()}`,
-        name,
-        change: `${quantity >= 0 ? "+" : ""}${quantity.toLocaleString()} ${unit}`,
-        positive: quantity >= 0,
-        at: formatWhen(new Date()),
-        team: "Inventory desk",
-        location,
-      },
-      ...current,
-    ]);
-    closeAdd();
+  const applySnapshot = (data: InventorySnapshot, requested: RegionCode) => {
+    if (regionRef.current === requested) setResource({ state: "ready", data });
   };
 
-  const submitManual = (event: FormEvent) => {
+  const submitManual = async (event: FormEvent) => {
     event.preventDefault();
-    const quantity = Number(itemQuantity);
-    if (!itemName.trim()) {
-      setFormError("Enter an item name.");
+    if (saving) return;
+    setFormError("");
+    if (!manualSelected) {
+      setFormError("Choose a class.");
       return;
     }
-    if (!itemCategory) {
-      setFormError("Choose a category.");
+    if (!manualIsFund && !manualItem) {
+      setFormError("Choose a subclass.");
       return;
     }
-    if (!Number.isFinite(quantity) || quantity < 0) {
-      setFormError("Enter a quantity of zero or more.");
+    const quantity = Number(manualQuantity);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      setFormError("Enter a quantity greater than zero.");
       return;
     }
-    addItem(itemName.trim(), itemCategory, quantity);
-  };
-
-  const submitDetected = (event: FormEvent) => {
-    event.preventDefault();
-    const quantity = Number(detectedQuantity);
-    if (!detectedName.trim()) {
-      setFormError("Name the object in view.");
+    const cap = classCapacity(manualSelected);
+    if (manualSelected.quantity + quantity > cap) {
+      setFormError(`${manualSelected.name} is limited to ${cap.toLocaleString()}.`);
       return;
     }
-    if (!detectedCategory) {
-      setFormError("Choose a category for the detected object.");
-      return;
+    const requested = region;
+    setSaving(true);
+    try {
+      const saved = await api.addInventory(requested, {
+        category_code: manualSelected.code,
+        item_code: manualIsFund ? null : manualItem,
+        quantity,
+        entry_mode: "manual",
+        direction: "in",
+      });
+      applySnapshot(saved, requested);
+      closeAdd();
+    } catch (reason) {
+      setFormError(errorText(reason));
+    } finally {
+      if (mounted.current) setSaving(false);
     }
-    if (!Number.isFinite(quantity) || quantity < 0) {
-      setFormError("Enter a quantity of zero or more.");
-      return;
-    }
-    addItem(detectedName.trim(), detectedCategory, quantity);
   };
 
   const startDetect = async () => {
     setFormError("");
     setCameraError("");
-    setDetecting(true);
     if (!navigator.mediaDevices?.getUserMedia) {
-      setCameraError("This browser has no camera. Name the object below and add it.");
+      setCameraError("This browser has no camera.");
       return;
     }
     try {
@@ -334,22 +441,76 @@ export default function InventoryManagement() {
       });
       setStream(next);
     } catch {
-      setCameraError("Camera permission was blocked. Name the object below and add it.");
+      setCameraError("Camera permission was blocked.");
     }
   };
 
-  const removeItem = (id: string) => {
-    setItems((current) => current.filter((item) => item.id !== id));
-    setMenuId(null);
+  const runDetect = async () => {
+    setFormError("");
+    setCameraError("");
+    if (!detectClass) {
+      setFormError("Choose a class.");
+      return;
+    }
+    const video = videoRef.current;
+    if (!video) {
+      setFormError("Start the camera before detecting an object.");
+      return;
+    }
+    setDetecting(true);
+    setDetection(null);
+    try {
+      if (!video.videoWidth) await video.play().catch(() => undefined);
+      const image = await captureFrame(video);
+      const result = await api.detectInventory(detectClass, image);
+      const label = subclassLabel(snapshotRef.current, result.category_code, result.item_code);
+      if (!mounted.current) return;
+      setDetection({
+        category_code: result.category_code,
+        item_code: result.item_code,
+        quantity: result.quantity,
+        name: label.name,
+        unit: label.unit,
+      });
+    } catch (reason) {
+      if (mounted.current) {
+        setDetection(null);
+        setFormError(errorText(reason));
+      }
+    } finally {
+      if (mounted.current) setDetecting(false);
+    }
   };
 
-  const showRecommendations = () => {
-    setRestockOnly(true);
-    setStatus("all");
-    tableRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const confirmDetection = async () => {
+    if (!detection || saving) return;
+    setFormError("");
+    const selected = classes.find((row) => row.code === detection.category_code);
+    if (selected) {
+      const cap = classCapacity(selected);
+      if (selected.quantity + detection.quantity > cap) {
+        setFormError(`${selected.name} is limited to ${cap.toLocaleString()}.`);
+        return;
+      }
+    }
+    const requested = region;
+    setSaving(true);
+    try {
+      const saved = await api.addInventory(requested, {
+        category_code: detection.category_code,
+        item_code: detection.item_code,
+        quantity: detection.quantity,
+        entry_mode: "scan",
+        direction: "in",
+      });
+      applySnapshot(saved, requested);
+      closeAdd();
+    } catch (reason) {
+      setFormError(errorText(reason));
+    } finally {
+      if (mounted.current) setSaving(false);
+    }
   };
-
-  const percent = (value: number) => (cards.total === 0 ? 0 : Math.round((value / cards.total) * 100));
 
   return (
     <main className="inventory">
@@ -365,7 +526,7 @@ export default function InventoryManagement() {
         </div>
         <div className="inv-header-actions">
           <label className="inv-search">
-            <span className="sr-only">Search items, categories, or locations</span>
+            <span className="sr-only">Search items, classes, or locations</span>
             <svg viewBox="0 0 24 24" aria-hidden="true">
               <circle cx="11" cy="11" r="6.5" />
               <path d="M16 16.5 20 20.5" />
@@ -373,88 +534,95 @@ export default function InventoryManagement() {
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search items, categories, or locations..."
+              placeholder="Search items, classes, or locations..."
               type="search"
             />
           </label>
-          <button type="button" className="add-launch" onClick={() => setAddOpen(true)}>
+          <button
+            type="button"
+            className="add-launch"
+            onClick={() => setAddOpen(true)}
+            disabled={resource.state !== "ready"}
+          >
             + Add Item
           </button>
         </div>
       </header>
 
-      <section className="inv-stats" aria-label="Inventory totals">
-        <article className="stat-card tone-total">
-          <span className="stat-icon" aria-hidden="true"><CubeIcon /></span>
-          <div>
-            <p>Total Items</p>
-            <strong>{cards.total.toLocaleString()}</strong>
-            <small>Across all categories</small>
-          </div>
-        </article>
-        {CARD_CATEGORIES.map((card) => (
-          <article key={card.key} className={`stat-card tone-${card.tone}`}>
-            <span className="stat-icon" aria-hidden="true">
-              <ItemGlyph name={card.key === "Food" ? "Rice Bags" : card.key === "Utensils" ? "Cooking Utensils" : card.label} />
-            </span>
+      {resource.state === "loading" && <p className="state">Loading inventory…</p>}
+      {resource.state === "error" && (
+        <p className="state error" role="alert">Inventory unavailable: {resource.error}</p>
+      )}
+
+      {resource.state === "ready" && (
+        <section className="inv-stats" aria-label="Inventory totals">
+          <article className="stat-card tone-total">
+            <span className="stat-icon" aria-hidden="true"><TotalItemsIcon /></span>
             <div>
-              <p>{card.label}</p>
-              <strong>{cards.counts[card.key].toLocaleString()}</strong>
-              <small>({percent(cards.counts[card.key])}%)</small>
+              <p>Total items</p>
+              <strong>{totalQuantity.toLocaleString()}</strong>
+              <small>{totalStatus} · {totalFill}% of capacity</small>
             </div>
           </article>
-        ))}
-      </section>
+          {classes.map((row) => {
+            const capacity = classCapacity(row);
+            const cardStatus = statusFor(row.quantity, capacity);
+            const fill = displayPercent(row.quantity, capacity);
+            return (
+              <article key={row.code} className={`stat-card ${toneClass(row.code)}`}>
+                <span className="stat-icon" aria-hidden="true">
+                  <ClassGlyph classCode={row.code} />
+                </span>
+                <div>
+                  <p>{row.name}</p>
+                  <strong>{row.quantity.toLocaleString()}</strong>
+                  <small>{cardStatus} · {fill}% of capacity</small>
+                </div>
+              </article>
+            );
+          })}
+        </section>
+      )}
 
       <div className="inv-layout">
-        <section className="inv-table-card" ref={tableRef}>
+        <section className="inv-table-card">
           <div className="inv-filters">
             <label>
               Location
               <select
-                value={location}
+                value={region}
                 onChange={(event) => {
-                  setLocation(event.target.value as LocationName);
-                  setRestockOnly(false);
+                  setRegion(event.target.value as RegionCode);
+                  setResource({ state: "loading" });
+                  setShowAllUpdates(false);
                 }}
               >
-                {LOCATIONS.map((name) => (
-                  <option key={name} value={name}>{name}</option>
+                {LOCATIONS.map((place) => (
+                  <option key={place.region} value={place.region}>{place.label}</option>
                 ))}
               </select>
             </label>
             <label>
-              Category
-              <select
-                value={category}
-                onChange={(event) => setCategory(event.target.value as Category | "all")}
-              >
-                <option value="all">All Categories</option>
-                {CATEGORIES.map((name) => (
-                  <option key={name} value={name}>{name}</option>
+              Class
+              <select value={classFilter} onChange={(event) => setClassFilter(event.target.value)}>
+                <option value="all">All Classes</option>
+                {classes.map((row) => (
+                  <option key={row.code} value={row.code}>{row.name}</option>
                 ))}
               </select>
             </label>
             <label>
               Status
               <select
-                value={restockOnly ? "restock" : status}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  if (value === "restock") {
-                    setRestockOnly(true);
-                    setStatus("all");
-                    return;
-                  }
-                  setRestockOnly(false);
-                  setStatus(value as StockStatus | "all");
-                }}
+                value={status}
+                onChange={(event) => setStatus(event.target.value as StockStatus | "all")}
               >
                 <option value="all">All Status</option>
-                <option value="In Stock">In Stock</option>
-                <option value="Low Stock">Low Stock</option>
                 <option value="Out of Stock">Out of Stock</option>
-                <option value="restock">Below 30%</option>
+                <option value="Critical">Critical</option>
+                <option value="Low Stock">Low Stock</option>
+                <option value="In Stock">In Stock</option>
+                <option value="Full">Full</option>
               </select>
             </label>
           </div>
@@ -466,7 +634,7 @@ export default function InventoryManagement() {
                 <button type="button" onClick={() => toggleSort("name")}>Item</button>
               </span>
               <span role="columnheader">
-                <button type="button" onClick={() => toggleSort("category")}>Category</button>
+                <button type="button" onClick={() => toggleSort("category")}>Class</button>
               </span>
               <span role="columnheader">
                 <button type="button" onClick={() => toggleSort("quantity")}>Quantity</button>
@@ -474,35 +642,29 @@ export default function InventoryManagement() {
               <span role="columnheader">
                 <button type="button" onClick={() => toggleSort("status")}>Status</button>
               </span>
-              <span role="columnheader">Actions</span>
             </div>
-            {visible.length === 0 && <p className="inv-empty">No items match these filters.</p>}
+            {resource.state === "ready" && visible.length === 0 && (
+              <p className="inv-empty">No items match these filters.</p>
+            )}
             {visible.map((item, index) => (
-              <div className="inv-row" role="row" key={item.id}>
+              <div className="inv-row" role="row" key={item.key}>
                 <span>{index + 1}</span>
                 <span className="item-name">
-                  <ItemGlyph name={item.name} />
+                  <ItemGlyph itemCode={item.itemCode} />
                   {item.name}
                 </span>
-                <span><em className={`cat-pill cat-${item.category.toLowerCase()}`}>{item.category}</em></span>
-                <span>{item.quantity.toLocaleString()} {item.unit}</span>
-                <span><em className={`stock-pill stock-${item.status.replace(/\s+/g, "-").toLowerCase()}`}>{item.status}</em></span>
-                <span className="row-actions">
-                  <button
-                    type="button"
-                    aria-label={`Actions for ${item.name}`}
-                    aria-expanded={menuId === item.id}
-                    onClick={() => setMenuId((current) => (current === item.id ? null : item.id))}
+                <span className="class-cell">
+                  <ClassGlyph classCode={item.classCode} compact />
+                  <em className={`cat-pill ${pillClass(item.classCode)}`}>{item.className}</em>
+                </span>
+                <span>{item.quantity.toLocaleString()} {unitLabel(item.unit)}</span>
+                <span>
+                  <em
+                    className={`stock-pill stock-${statusSlug(item.status)}`}
+                    title={`${item.className} is ${item.fill}% full`}
                   >
-                    ···
-                  </button>
-                  {menuId === item.id && (
-                    <div className="row-menu" role="menu">
-                      <button type="button" role="menuitem" onClick={() => removeItem(item.id)}>
-                        Remove
-                      </button>
-                    </div>
-                  )}
+                    {item.status}
+                  </em>
                 </span>
               </div>
             ))}
@@ -512,55 +674,55 @@ export default function InventoryManagement() {
         <aside className="inv-rail">
           <section className="rail-card alert-card">
             <header>
-              <h2>
-                <span aria-hidden="true">!</span>
-                {" "}Low Stock Alert
-              </h2>
-              <b>{alerts.length}</b>
+              <h2>Restock</h2>
+              <b>{restock.length}</b>
             </header>
-            {alerts.length === 0 && <p className="rail-empty">No items are below 30%.</p>}
+            {restock.length === 0 && <p className="rail-empty">No class is below 30%.</p>}
             <ul>
-              {alerts.map((item) => (
-                <li key={item.id}>
-                  <ItemGlyph name={item.name} />
+              {restock.map((item) => (
+                <li key={item.key}>
+                  {item.classCode === "total"
+                    ? <TotalItemsIcon compact />
+                    : <ClassGlyph classCode={item.classCode} compact />}
                   <div>
                     <strong>{item.name}</strong>
-                    <small>{item.quantity.toLocaleString()} {item.unit} (below 30%)</small>
+                    <small>{item.status} · {item.fill}% of capacity</small>
                   </div>
                 </li>
               ))}
             </ul>
           </section>
-
           <section className="rail-card">
             <header>
               <h2>Recent Stock Updates</h2>
-              <button type="button" className="text-link" onClick={() => setShowAllUpdates((current) => !current)}>
-                {showAllUpdates ? "Show less" : "View All"}
-              </button>
+              {movements.length > 4 && (
+                <button type="button" className="text-link" onClick={() => setShowAllUpdates((current) => !current)}>
+                  {showAllUpdates ? "Show less" : "View All"}
+                </button>
+              )}
             </header>
+            {resource.state === "loading" && <p className="rail-empty">Loading stock updates…</p>}
+            {resource.state === "error" && <p className="rail-empty">Stock updates are unavailable.</p>}
+            {resource.state === "ready" && movements.length === 0 && (
+              <p className="rail-empty">No stock updates for this location.</p>
+            )}
             <ul className="update-list">
-              {shownUpdates.map((update) => (
-                <li key={update.id}>
-                  <span className={update.positive ? "up" : "down"} aria-hidden="true">{update.positive ? "+" : "−"}</span>
-                  <div>
-                    <strong>{update.name}</strong>
-                    <em className={update.positive ? "up" : "down"}>{update.change}</em>
-                    <small>{update.at} · {update.team}</small>
-                  </div>
-                </li>
-              ))}
+              {shownUpdates.map((update) => {
+                const signed = update.direction === "out" ? -update.quantity : update.quantity;
+                const positive = update.direction === "in";
+                const change = `${signed > 0 ? "+" : ""}${signed.toLocaleString()} ${unitLabel(update.unit)}`;
+                return (
+                  <li key={update.id}>
+                    <span className={positive ? "up" : "down"} aria-hidden="true">{positive ? "+" : "−"}</span>
+                    <div>
+                      <strong>{update.name}</strong>
+                      <em className={positive ? "up" : "down"}>{change}</em>
+                      <small>{formatWhen(update.created_at)}</small>
+                    </div>
+                  </li>
+                );
+              })}
             </ul>
-          </section>
-
-          <section className="rail-card suggest-card">
-            <header>
-              <h2>AI Suggestion</h2>
-            </header>
-            <p>{suggestion}</p>
-            <button type="button" className="outline" onClick={showRecommendations}>
-              View Recommendations
-            </button>
           </section>
         </aside>
       </div>
@@ -596,8 +758,24 @@ export default function InventoryManagement() {
                 <span className="choice-icon" aria-hidden="true">
                   <svg viewBox="0 0 24 24"><path d="M4 8V5h3M20 8V5h-3M4 16v3h3M20 16v3h-3M12 9v6M9 12h6" /></svg>
                 </span>
-                <h3>Scan Item</h3>
-                <p>Use your device camera to scan barcode or QR code and add the item automatically.</p>
+                <h3>Detect Object</h3>
+                <p>Use the camera on clothes, foods, or utility. Stock is saved only after you confirm.</p>
+                <label>
+                  Class
+                  <select
+                    value={detectClass}
+                    onChange={(event) => {
+                      setDetectClass(event.target.value);
+                      setDetection(null);
+                      setFormError("");
+                    }}
+                  >
+                    <option value="">Select class</option>
+                    {detectClasses.map((row) => (
+                      <option key={row.code} value={row.code}>{row.name}</option>
+                    ))}
+                  </select>
+                </label>
                 <div className="detect-stage">
                   {stream ? (
                     <video ref={videoRef} autoPlay playsInline muted />
@@ -612,42 +790,28 @@ export default function InventoryManagement() {
                   )}
                 </div>
                 {cameraError && <p className="camera-note">{cameraError}</p>}
-                {detecting ? (
-                  <form onSubmit={submitDetected}>
-                    <label>
-                      Object name
-                      <input
-                        value={detectedName}
-                        onChange={(event) => setDetectedName(event.target.value)}
-                        placeholder="Name the detected object"
-                      />
-                    </label>
-                    <label>
-                      Category
-                      <select
-                        value={detectedCategory}
-                        onChange={(event) => setDetectedCategory(event.target.value as Category | "")}
-                      >
-                        <option value="">Select category</option>
-                        {CATEGORIES.map((name) => (
-                          <option key={name} value={name}>{name}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      Quantity
-                      <input
-                        type="number"
-                        min="0"
-                        value={detectedQuantity}
-                        onChange={(event) => setDetectedQuantity(event.target.value)}
-                      />
-                    </label>
-                    <button type="submit">Add detected item</button>
-                  </form>
+                {detection && detectClass === detection.category_code && (
+                  <div>
+                    <p>Subclass <strong>{detection.name}</strong></p>
+                    <p>
+                      Quantity{" "}
+                      <strong>
+                        {detection.quantity.toLocaleString()}
+                        {detection.unit ? ` ${unitLabel(detection.unit)}` : ""}
+                      </strong>
+                    </p>
+                    <button type="button" onClick={() => void confirmDetection()} disabled={saving || detecting}>
+                      {saving ? "Saving…" : "Save detected item"}
+                    </button>
+                  </div>
+                )}
+                {stream ? (
+                  <button type="button" onClick={() => void runDetect()} disabled={detecting || saving}>
+                    {detecting ? "Detecting…" : "Detect Object"}
+                  </button>
                 ) : (
                   <button type="button" onClick={() => void startDetect()}>
-                    Scan Now
+                    Start camera
                   </button>
                 )}
               </section>
@@ -657,39 +821,48 @@ export default function InventoryManagement() {
                   <svg viewBox="0 0 24 24"><path d="M7 3h7l5 5v13H7z" /><path d="M14 3v5h5M9 13h6M9 17h6" /></svg>
                 </span>
                 <h3>Manual Add</h3>
-                <p>Enter item details manually if the camera cannot detect the item.</p>
-                <form onSubmit={submitManual}>
+                <p>Enter a class and quantity. Fund has no subclass.</p>
+                <form onSubmit={(event) => void submitManual(event)} noValidate>
                   <label>
-                    Item Name
-                    <input
-                      value={itemName}
-                      onChange={(event) => setItemName(event.target.value)}
-                      placeholder="Enter item name"
-                    />
-                  </label>
-                  <label>
-                    Category
+                    Class
                     <select
-                      value={itemCategory}
-                      onChange={(event) => setItemCategory(event.target.value as Category | "")}
+                      value={manualClass}
+                      onChange={(event) => {
+                        setManualClass(event.target.value);
+                        setManualItem("");
+                      }}
                     >
-                      <option value="">Select category</option>
-                      {CATEGORIES.map((name) => (
-                        <option key={name} value={name}>{name}</option>
+                      <option value="">Select class</option>
+                      {classes.map((row) => (
+                        <option key={row.code} value={row.code}>{row.name}</option>
                       ))}
                     </select>
                   </label>
+                  {manualSelected && !manualIsFund && (
+                    <label>
+                      Subclass
+                      <select value={manualItem} onChange={(event) => setManualItem(event.target.value)}>
+                        <option value="">Select subclass</option>
+                        {manualSelected.items.filter((item) => item.code).map((item) => (
+                          <option key={item.code} value={item.code ?? ""}>{item.name}</option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                   <label>
                     Quantity
                     <input
                       type="number"
                       min="0"
-                      value={itemQuantity}
-                      onChange={(event) => setItemQuantity(event.target.value)}
+                      step="any"
+                      value={manualQuantity}
+                      onChange={(event) => setManualQuantity(event.target.value)}
                       placeholder="Enter quantity"
                     />
                   </label>
-                  <button type="submit">Add Item</button>
+                  <button type="submit" disabled={saving}>
+                    {saving ? "Saving…" : "Add Item"}
+                  </button>
                 </form>
               </section>
             </div>

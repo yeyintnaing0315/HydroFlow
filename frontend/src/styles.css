@@ -222,6 +222,8 @@ button.text-link, .text-link {
 .tone-utensils { background: linear-gradient(180deg, #fff3e8, #fff); }
 .tone-tents { background: linear-gradient(180deg, #f3eefb, #fff); }
 .tone-foods { background: linear-gradient(180deg, #e7f7f1, #fff); }
+.tone-utility { background: linear-gradient(180deg, #fff3e8, #fff); }
+.tone-fund { background: linear-gradient(180deg, #f3eefb, #fff); }
 .tone-people { background: linear-gradient(180deg, #eef5ff, #fff); }
 .tone-stock { background: linear-gradient(180deg, #e9f8ef, #fff); }
 .tone-need { background: linear-gradient(180deg, #fff3e8, #fff); }
@@ -434,7 +436,7 @@ button.text-link, .text-link {
 .inv-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .7rem; margin-bottom: .8rem; }
 .inv-table { display: grid; }
 .inv-row {
-  display: grid; grid-template-columns: 48px 1.4fr .9fr .9fr .9fr 64px; gap: .6rem; align-items: center;
+  display: grid; grid-template-columns: 48px 1.4fr .9fr .9fr .9fr; gap: .6rem; align-items: center;
   padding: .7rem .2rem; border-bottom: 1px solid #eef3f8; font-size: .84rem;
 }
 .inv-row.header { color: var(--muted); font-size: .7rem; font-weight: 800; text-transform: uppercase; }
@@ -444,6 +446,8 @@ button.text-link, .text-link {
   display: grid; place-items: center; width: 32px; height: 32px; border-radius: 10px; background: #f3f7fb;
 }
 .item-glyph svg { width: 16px; height: 16px; fill: currentColor; }
+.item-glyph.is-compact { width: 22px; height: 22px; border-radius: 7px; }
+.class-cell { display: flex; align-items: center; gap: .4rem; }
 .tone-amber { color: #c49212; } .tone-blue { color: #1f6feb; } .tone-sky { color: #2aa87a; }
 .tone-orange { color: #e07a2f; } .tone-purple { color: #7b5ea7; } .tone-green { color: #1f9d62; }
 .tone-indigo { color: #4c6ad9; } .tone-slate { color: #52667a; } .tone-red { color: #d64545; } .tone-yellow { color: #c49212; }
@@ -453,9 +457,14 @@ button.text-link, .text-link {
 .cat-utensils { color: #8a4510; background: #ffe0c2; }
 .cat-tents { color: #5b3d8a; background: #f3eefb; }
 .cat-other { color: #52667a; background: #eef2f6; }
+.cat-foods { color: #14643d; background: #d7f3e4; }
+.cat-utility { color: #8a4510; background: #ffe0c2; }
+.cat-fund { color: #5b3d8a; background: #f3eefb; }
 .stock-in-stock { color: #14643d; background: #d7f3e4; }
 .stock-low-stock { color: #8a4510; background: #ffe0c2; }
+.stock-critical { color: #8a3030; background: #ffe3e3; }
 .stock-out-of-stock { color: #8a3030; background: #ffe3e3; }
+.stock-full { color: #1558c0; background: #e8f1ff; }
 .row-actions { position: relative; }
 .row-actions button { margin: 0; padding: .2rem .45rem; color: var(--text); background: transparent; }
 .row-menu {

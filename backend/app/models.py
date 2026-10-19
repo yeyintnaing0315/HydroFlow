@@ -324,6 +324,67 @@ class RiskResult(Base):
     uncertainty_json: Mapped[dict] = mapped_column(JSON, default=dict)
 
 
+class InventoryCategory(Base):
+    """Shared class list. Stock quantities live on the Bago East and West tables."""
+
+    __tablename__ = "inventory_categories"
+    __table_args__ = (
+        CheckConstraint(
+            "entry_mode IN ('scan_or_manual', 'manual_only')",
+            name="ck_inventory_category_entry_mode",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(40), unique=True)
+    name: Mapped[str] = mapped_column(String(80))
+    entry_mode: Mapped[str] = mapped_column(String(20))
+    sort_order: Mapped[int] = mapped_column(Integer)
+    item_types: Mapped[list["InventoryItemType"]] = relationship(
+        back_populates="category",
+        cascade="all, delete-orphan",
+    )
+
+
+class InventoryItemType(Base):
+    __tablename__ = "inventory_item_types"
+    __table_args__ = (
+        UniqueConstraint("category_id", "code", name="uq_inventory_item_type"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    category_id: Mapped[int] = mapped_column(ForeignKey("inventory_categories.id"), index=True)
+    code: Mapped[str] = mapped_column(String(40))
+    name: Mapped[str] = mapped_column(String(80))
+    unit: Mapped[str] = mapped_column(String(20))
+    sort_order: Mapped[int] = mapped_column(Integer)
+    category: Mapped[InventoryCategory] = relationship(back_populates="item_types")
+
+
+class InventoryImage(Base):
+    """One reference photo. confirmed_quantity is not a stock balance."""
+
+    __tablename__ = "inventory_images"
+    __table_args__ = (
+        CheckConstraint(
+            "(category_code IS NULL AND item_code IS NULL) OR (category_code IS NOT NULL AND item_code IS NOT NULL)",
+            name="ck_inventory_image_class_pair",
+        ),
+        CheckConstraint("confirmed_quantity >= 0", name="ck_inventory_image_quantity"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    relative_path: Mapped[str] = mapped_column(String(500))
+    category_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    item_code: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    content_sha256: Mapped[str] = mapped_column(String(64), unique=True)
+    confirmed_quantity: Mapped[float] = mapped_column(
+        Numeric(14, 2),
+        default=0,
+        server_default=text("0"),
+    )
+
+
 def _balance_checks(prefix: str) -> tuple[CheckConstraint, ...]:
     return (
         CheckConstraint("quantity >= 0", name=f"ck_{prefix}_balance_nonnegative"),

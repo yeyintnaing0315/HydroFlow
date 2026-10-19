@@ -32,6 +32,22 @@ async def detect_inventory_item(
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
+@router.get("/inventory")
+@router.get("/inventory/")
+def list_inventory(session: Session = Depends(get_inventory_db)) -> dict:
+    try:
+        payload = {
+            "locations": [
+                region_snapshot(session, "east"),
+                region_snapshot(session, "west"),
+            ]
+        }
+        session.commit()
+    except InventoryError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return payload
+
+
 @router.get("/inventory/{region}")
 def get_region_inventory(region: str, session: Session = Depends(get_inventory_db)) -> dict:
     try:

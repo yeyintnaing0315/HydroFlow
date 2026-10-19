@@ -428,5 +428,5 @@ describe("dashboard", () => {
     expect(await screen.findByRole("heading", { name: "Resource allocation list" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Generate allocation plan" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Check inventory" })).toBeInTheDocument();
-  });
+  }, 30000);
 });

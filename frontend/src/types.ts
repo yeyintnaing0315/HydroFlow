@@ -38,7 +38,7 @@ export interface InventoryClass {
   name: string;
   entry_mode: "scan_or_manual" | "manual_only";
   quantity: number;
-  capacity: number;
+  capacity?: number;
   items: InventoryClassItem[];
 }
 
