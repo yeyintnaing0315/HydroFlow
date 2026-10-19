@@ -489,11 +489,16 @@ button.text-link, .text-link {
 .inv-modal {
   width: min(880px, 100%); max-height: 90vh; overflow: auto; background: #fff;
   border-radius: 22px; box-shadow: 0 24px 60px rgba(7, 26, 51, .25); padding: 1.2rem 1.3rem 1.4rem;
+  justify-self: center;
 }
+.inv-modal.is-single { width: min(460px, 100%); }
 .modal-head { display: flex; justify-content: space-between; gap: 1rem; align-items: start; }
 .modal-head h2 { display: flex; align-items: center; gap: .5rem; }
 .modal-close { margin: 0; width: 36px; height: 36px; padding: 0; color: var(--text); background: #f4f7fb; }
 .add-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: 1rem; }
+.add-grid.single { grid-template-columns: minmax(0, 1fr); }
+.add-choice { margin: 0; color: inherit; text-align: left; cursor: pointer; }
+.add-choice h3, .add-choice p { margin: 0; }
 .add-card { display: grid; gap: .45rem; padding: 1rem; border: 1px solid var(--line); border-radius: 18px; background: #f8fbff; }
 .choice-icon { display: grid; place-items: center; width: 42px; height: 42px; color: var(--blue); background: #fff; border-radius: 12px; }
 .choice-icon svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.7; }

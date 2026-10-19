@@ -91,6 +91,7 @@ function formatWhen(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Yangon",
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -228,6 +229,7 @@ export default function InventoryManagement() {
   const [sortAsc, setSortAsc] = useState(true);
   const [showAllUpdates, setShowAllUpdates] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [addMode, setAddMode] = useState<"detect" | "manual" | null>(null);
   const [saving, setSaving] = useState(false);
   const [detecting, setDetecting] = useState(false);
   const [cameraError, setCameraError] = useState("");
@@ -257,6 +259,7 @@ export default function InventoryManagement() {
   const closeAdd = useCallback(() => {
     stopCamera();
     setAddOpen(false);
+    setAddMode(null);
     setDetecting(false);
     setCameraError("");
     setFormError("");
@@ -314,8 +317,6 @@ export default function InventoryManagement() {
   const rows = useMemo<StockRow[]>(() => {
     return classes.flatMap((row) => {
       const capacity = classCapacity(row);
-      const status = statusFor(row.quantity, capacity);
-      const fill = displayPercent(row.quantity, capacity);
       return row.items.map((item) => ({
         key: `${row.code}:${item.code ?? "fund"}`,
         name: item.name,
@@ -324,8 +325,8 @@ export default function InventoryManagement() {
         className: row.name,
         quantity: item.quantity,
         unit: item.unit,
-        status,
-        fill,
+        status: statusFor(item.quantity, capacity),
+        fill: displayPercent(item.quantity, capacity),
       }));
     });
   }, [classes]);
@@ -661,7 +662,7 @@ export default function InventoryManagement() {
                 <span>
                   <em
                     className={`stock-pill stock-${statusSlug(item.status)}`}
-                    title={`${item.className} is ${item.fill}% full`}
+                    title={`${item.name} is ${item.fill}% of the ${item.className} capacity`}
                   >
                     {item.status}
                   </em>
@@ -735,7 +736,7 @@ export default function InventoryManagement() {
           }}
         >
           <div
-            className="inv-modal"
+            className={addMode === null ? "inv-modal" : "inv-modal is-single"}
             role="dialog"
             aria-modal="true"
             aria-labelledby="add-item-title"
@@ -753,11 +754,32 @@ export default function InventoryManagement() {
               </button>
             </header>
             {formError && <p className="form-error" role="alert">{formError}</p>}
-            <div className="add-grid">
+            {addMode === null && (
+              <div className="add-grid">
+                <button type="button" className="add-card add-choice" onClick={() => setAddMode("detect")}>
+                  <span className="choice-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M4 8V5h3M20 8V5h-3M4 16v3h3M20 16v3h-3M12 9v6M9 12h6" /></svg>
+                  </span>
+                  <h3>Detect Object</h3>
+                  <p>Use the camera on clothes, foods, or utility.</p>
+                </button>
+                <button type="button" className="add-card add-choice" onClick={() => setAddMode("manual")}>
+                  <span className="choice-icon" aria-hidden="true">
+                    <svg viewBox="0 0 24 24"><path d="M7 3h7l5 5v13H7z" /><path d="M14 3v5h5M9 13h6M9 17h6" /></svg>
+                  </span>
+                  <h3>Manual Add</h3>
+                  <p>Type the class, subclass, and quantity. Fund is only here.</p>
+                </button>
+              </div>
+            )}
+            {addMode !== null && (
+            <div className="add-grid single">
               <section className="add-card">
-                <span className="choice-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24"><path d="M4 8V5h3M20 8V5h-3M4 16v3h3M20 16v3h-3M12 9v6M9 12h6" /></svg>
-                </span>
+                <button type="button" className="text-link" onClick={() => { stopCamera(); setAddMode(null); setFormError(""); }}>
+                  Choose another way
+                </button>
+                {addMode === "detect" && (
+                <>
                 <h3>Detect Object</h3>
                 <p>Use the camera on clothes, foods, or utility. Stock is saved only after you confirm.</p>
                 <label>
@@ -814,12 +836,10 @@ export default function InventoryManagement() {
                     Start camera
                   </button>
                 )}
-              </section>
-
-              <section className="add-card">
-                <span className="choice-icon" aria-hidden="true">
-                  <svg viewBox="0 0 24 24"><path d="M7 3h7l5 5v13H7z" /><path d="M14 3v5h5M9 13h6M9 17h6" /></svg>
-                </span>
+                </>
+                )}
+                {addMode === "manual" && (
+                <>
                 <h3>Manual Add</h3>
                 <p>Enter a class and quantity. Fund has no subclass.</p>
                 <form onSubmit={(event) => void submitManual(event)} noValidate>
@@ -864,8 +884,11 @@ export default function InventoryManagement() {
                     {saving ? "Saving…" : "Add Item"}
                   </button>
                 </form>
+                </>
+                )}
               </section>
             </div>
+            )}
           </div>
         </div>
       )}
