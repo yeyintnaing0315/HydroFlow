@@ -13,7 +13,7 @@ from app.db import Base, get_db
 from app.main import app
 from app.models import Location, Observation
 from app.schemas.api import AlertCreate, ForecastPoint, HistoricalPoint
-from app.services import clients, live_features, persistence, prediction
+from app.services import clients, live_features, persistence, prediction, scheduler
 from app.services.risk import academic_risk_score
 
 
@@ -85,13 +85,14 @@ def test_prediction_valid_and_invalid_request(client: TestClient, monkeypatch) -
         json={"date": "2026-01-02", "township_id": "bago", "latitude": 1, "longitude": 2},
     )
     assert response.status_code == 200
-    assert response.json() == {
-        "flood_probability": 0.42,
-        "predicted_flood": True,
-        "threshold": 0.4,
-        "model_version": "baseline-logistic-v2",
-        "alert_recorded": False,
-    }
+    body = response.json()
+    assert body["flood_probability"] == 0.42
+    assert body["predicted_flood"] is True
+    assert body["threshold"] == 0.4
+    assert body["model_version"] == "baseline-logistic-v2"
+    assert body["alert_recorded"] is False
+    assert body["evidence_type"] == "model_prediction"
+    assert body["probability_status"] == "uncalibrated_academic_score"
     assert client.post("/predict", json={}).status_code == 422
 
 
@@ -161,7 +162,7 @@ def test_database_alert_dedupe_and_history_filters(session: Session) -> None:
     assert [item.precipitation_mm for item in observations] == [2.0]
 
 
-def test_high_risk_prediction_records_one_alert(client: TestClient, monkeypatch) -> None:
+def test_high_risk_prediction_does_not_create_an_official_alert(client: TestClient, monkeypatch) -> None:
     monkeypatch.setattr(prediction, "load_model", lambda: (GoodModel(), {"threshold": 0.4}))
     use_api_days(monkeypatch, [(date(2026, 1, 2), 60.0, 0.0)])
     payload = {"date": "2026-01-02", "township_id": "bago", "latitude": 17.3, "longitude": 96.4}
@@ -170,10 +171,9 @@ def test_high_risk_prediction_records_one_alert(client: TestClient, monkeypatch)
     alerts = client.get("/alerts")
 
     assert first.status_code == second.status_code == 200
-    assert first.json()["alert_recorded"] is True
+    assert first.json()["alert_recorded"] is False
     assert alerts.status_code == 200
-    assert len(alerts.json()) == 1
-    assert "Not an operational warning." in alerts.json()[0]["message"]
+    assert alerts.json() == []
 
 
 def test_alert_route(client: TestClient, session: Session) -> None:
@@ -192,6 +192,61 @@ def test_alert_route(client: TestClient, session: Session) -> None:
     response = client.get(f"/alerts?location_id={location.id}&level=moderate")
     assert response.status_code == 200
     assert response.json()[0]["message"] == "Academic alert"
+
+
+def test_operational_mutations_require_configured_admin_key(client, monkeypatch) -> None:
+    monkeypatch.delenv("ADMIN_API_KEY", raising=False)
+    assert client.post("/runs/prediction").status_code == 503
+    monkeypatch.setenv("ADMIN_API_KEY", "test-secret")
+    assert client.post("/runs/prediction").status_code == 401
+    assert (
+        client.post(
+            "/official-warnings/import",
+            headers={"X-Admin-Key": "wrong-secret"},
+            json={},
+        ).status_code
+        == 401
+    )
+    invalid = client.post(
+        "/official-warnings/import",
+        headers={"X-Admin-Key": "test-secret"},
+        json={
+            "external_id": "dmh-test",
+            "issued_at": "2026-10-15T00:00:00Z",
+            "severity": "warning",
+            "message": "Traceable test warning",
+            "source_url": "http://insecure.example",
+        },
+    )
+    assert invalid.status_code == 422
+
+
+def test_operational_read_endpoints_are_available(client) -> None:
+    assert client.get("/sources").status_code == 200
+    for path in (
+        "/runs",
+        "/risk-results",
+        "/inundation-products",
+        "/settlements",
+        "/exposure-summaries",
+    ):
+        response = client.get(path)
+        assert response.status_code == 200
+        assert response.json() == []
+
+
+def test_manual_run_reports_unclaimed_race(client, monkeypatch) -> None:
+    async def no_claim(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setenv("ADMIN_API_KEY", "test-secret")
+    monkeypatch.setattr(scheduler, "execute_prediction_run", no_claim)
+    response = client.post(
+        "/runs/prediction",
+        headers={"X-Admin-Key": "test-secret"},
+    )
+    assert response.status_code == 409
+    assert "not claimed" in response.json()["detail"]
 
 
 def test_external_routes_are_mocked(client: TestClient, monkeypatch) -> None:
@@ -213,12 +268,59 @@ def test_external_routes_are_mocked(client: TestClient, monkeypatch) -> None:
 
     forecast = client.get("/forecast?latitude=1&longitude=2")
     assert forecast.status_code == 200
-    assert forecast.json()["points"][1]["discharge_m3_s"] == 8
+    assert len(forecast.json()["points"]) == 1
+    assert forecast.json()["points"][0]["discharge_m3_s"] == 8
     history = client.get(
-        "/historical?latitude=1&longitude=2&start=2026-01-02&end=2026-01-03"
+        "/historical?latitude=1&longitude=2&start=2026-01-02&end=2026-01-03&township_id=bago"
     )
     assert history.status_code == 200
+    assert history.json()["points"][0]["temperature_c"] == 25
     assert captured == {"start": date(2026, 1, 2), "end": date(2026, 1, 3)}
+
+    async def failing_history(*_args, **_kwargs):
+        raise ValueError("provider down")
+
+    monkeypatch.setattr(clients, "nasa_power_history", failing_history)
+    stored = client.get(
+        "/historical?latitude=1&longitude=2&start=2026-01-02&end=2026-01-03&township_id=bago"
+    )
+    assert stored.status_code == 200
+    assert stored.json()["points"][0]["date"] == "2026-01-02"
+
+
+def test_blank_nasa_day_is_filled_from_open_meteo(client: TestClient, monkeypatch) -> None:
+    async def blank_history(latitude: float, longitude: float, start: date, end: date):
+        return [
+            HistoricalPoint(
+                date=date(2026, 10, 16),
+                precipitation_mm=None,
+                temperature_c=None,
+                relative_humidity_pct=None,
+            )
+        ]
+
+    async def recent_weather(latitude: float, longitude: float, past_days: int = 62, forecast_days: int = 7):
+        return [
+            {
+                "date": date(2026, 10, 16),
+                "rainfall_mm": 6.5,
+                "temperature_c": 27.2,
+                "relative_humidity_pct": 89.0,
+                "wind_speed_m_s": 1.1,
+            }
+        ]
+
+    monkeypatch.setattr(clients, "nasa_power_history", blank_history)
+    monkeypatch.setattr(clients, "open_meteo_daily_weather", recent_weather)
+    response = client.get(
+        "/historical?latitude=18.1&longitude=95.6&start=2026-10-12&end=2026-10-16&township_id=paungde"
+    )
+    assert response.status_code == 200
+    point = response.json()["points"][0]
+    assert point["date"] == "2026-10-16"
+    assert point["precipitation_mm"] == 6.5
+    assert point["temperature_c"] == 27.2
+    assert point["relative_humidity_pct"] == 89.0
     assert client.get(
         "/historical?latitude=1&longitude=2&start=2026-01-03&end=2026-01-02"
     ).status_code == 422
@@ -291,7 +393,7 @@ def test_clients_validate_and_convert_missing_values(monkeypatch) -> None:
     assert points[0].temperature_c == 23.5
     assert points[0].relative_humidity_pct is None
     requested = created["client"].calls[0][1]["params"]
-    assert requested["parameters"] == "PRECTOTCORR,T2M,RH2M"
+    assert requested["parameters"] == "PRECTOTCORR,T2M,RH2M,WS2M"
     assert requested["time-standard"] == "UTC"
 
     monkeypatch.setattr(

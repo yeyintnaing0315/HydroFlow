@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { CircleMarker, GeoJSON, MapContainer, Pane, Popup, TileLayer, useMap } from "react-leaflet";
 import type { GeoJsonObject } from "geojson";
+import AllocationPrompt from "./components/prediction/AllocationPrompt";
 import DailyDetailPanel from "./components/prediction/DailyDetailPanel";
+import type { AllocationFocus } from "./lib/allocationFocus";
+import { applyDemoRisk, demoRiskBanner } from "./lib/demoRisk";
 import { districtColor, formatPercent, riskColor, riskLabel } from "./components/prediction/mapUtils";
 import { usePredictionTimeline } from "./hooks/usePredictionTimeline";
 import type {
@@ -127,19 +130,28 @@ function DayGroup({
   );
 }
 
+export interface PredictionMapContext {
+  regionLabel: string;
+  districtName: string;
+  townshipName: string;
+}
+
 interface FloodPredictionDashboardProps {
   areas: Resource<BagoAreasResponse>;
   health: Resource<HealthResponse>;
   runs: Resource<JobRun[]>;
   inundation: Resource<InundationProduct[]>;
   settlements: Resource<SettlementPoint[]>;
-  onPlanResources?: () => void;
+  onPlanResources?: (focus: AllocationFocus) => void;
+  onMapContextChange?: (context: PredictionMapContext | null) => void;
 }
 
 export default function FloodPredictionDashboard({
   areas,
   inundation,
   settlements,
+  onPlanResources,
+  onMapContextChange,
 }: FloodPredictionDashboardProps) {
   const [selectedTownship, setSelectedTownship] = useState("");
   const [districtFilter, setDistrictFilter] = useState("all");
@@ -151,7 +163,10 @@ export default function FloodPredictionDashboard({
   }, [areas.data, selectedTownship]);
 
   const {
-    asOf,
+    anchorDate,
+    setAnchorDate,
+    dateMin,
+    dateMax,
     selectedDate,
     setSelectedDate,
     timeline,
@@ -186,14 +201,42 @@ export default function FloodPredictionDashboard({
 
   const chooseTownship = (id: string) => {
     setSelectedTownship(id);
-    const district = areas.data?.districts.find((item) => item.townships.some((township) => township.id === id));
-    if (district) setDistrictFilter(district.id);
   };
+
+  const selectedTownshipMeta = useMemo(() => {
+    for (const district of areas.data?.districts ?? []) {
+      const match = district.townships.find((township) => township.id === selectedTownship);
+      if (match) {
+        return {
+          name: match.name_en,
+          latitude: match.latitude,
+          longitude: match.longitude,
+          districtName: district.name_en,
+        };
+      }
+    }
+    return null;
+  }, [areas.data, selectedTownship]);
+
+  useEffect(() => {
+    if (!onMapContextChange) return;
+    if (!selectedTownshipMeta) {
+      onMapContextChange(null);
+      return;
+    }
+    onMapContextChange({
+      regionLabel: "Bago Region, Myanmar",
+      districtName: selectedTownshipMeta.districtName,
+      townshipName: selectedTownshipMeta.name,
+    });
+  }, [onMapContextChange, selectedTownshipMeta]);
 
   const timelineDays = timeline.data?.days ?? [];
   const pastDays = timelineDays.filter((day) => day.period_type === "historical");
   const forecastDays = timelineDays.filter((day) => day.period_type === "forecast");
   const timelineReady = timeline.state === "ready";
+  const demoDay = applyDemoRisk(selectedDay);
+  const demoBanner = demoRiskBanner();
 
   return (
     <main className="predict-board">
@@ -257,14 +300,8 @@ export default function FloodPredictionDashboard({
                       fillColor: fill,
                       fillOpacity: score ? 0.62 : 0.2,
                     }}
-                    eventHandlers={{ click: () => chooseTownship(township.id) }}
-                  >
-                    <TownshipPopup
-                      name={township.name_en}
-                      probability={score?.flood_probability}
-                      level={score?.probability_risk_level ?? null}
-                    />
-                  </GeoJSON>
+                    interactive={false}
+                  />
                 );
               })}
               <Pane name="district-outlines" style={{ zIndex: 450, pointerEvents: "none" }}>
@@ -285,32 +322,38 @@ export default function FloodPredictionDashboard({
                     ),
                 )}
               </Pane>
-              {visibleTownships.map((township) => {
-                if (township.geometry) return null;
-                const score = scoresByTownship.get(township.id);
-                const selected = township.id === selectedTownship;
-                const fill = score ? riskColor(score.probability_risk_level ?? "unknown") : township.color;
-                return (
-                  <CircleMarker
-                    key={township.id}
-                    center={[township.latitude, township.longitude]}
-                    radius={selected ? 7 : 5}
-                    pathOptions={{
-                      color: selected ? "#f4fbff" : township.color,
-                      fillColor: fill,
-                      fillOpacity: score ? 0.9 : 0.45,
-                      weight: selected ? 3 : 1.5,
-                    }}
-                    eventHandlers={{ click: () => chooseTownship(township.id) }}
-                  >
-                    <TownshipPopup
-                      name={township.name_en}
-                      probability={score?.flood_probability}
-                      level={score?.probability_risk_level ?? null}
-                    />
-                  </CircleMarker>
-                );
-              })}
+              <Pane name="township-pins" style={{ zIndex: 520 }}>
+                {visibleTownships.map((township) => {
+                  const score = scoresByTownship.get(township.id);
+                  const selected = township.id === selectedTownship;
+                  const fill = score ? riskColor(score.probability_risk_level ?? "unknown") : township.color;
+                  return (
+                    <CircleMarker
+                      key={`pin-${township.id}`}
+                      center={[township.latitude, township.longitude]}
+                      radius={selected ? 9 : 7}
+                      pathOptions={{
+                        color: selected ? "#ffffff" : "#0b1624",
+                        fillColor: fill,
+                        fillOpacity: 0.95,
+                        weight: selected ? 3 : 2,
+                      }}
+                      eventHandlers={{
+                        click: () => chooseTownship(township.id),
+                        mouseover: (event) => {
+                          event.target.openPopup();
+                        },
+                      }}
+                    >
+                      <TownshipPopup
+                        name={township.name_en}
+                        probability={score?.flood_probability}
+                        level={score?.probability_risk_level ?? null}
+                      />
+                    </CircleMarker>
+                  );
+                })}
+              </Pane>
               {settlements.data?.map((settlement) => (
                 <CircleMarker
                   key={`settlement-${settlement.id}`}
@@ -334,16 +377,27 @@ export default function FloodPredictionDashboard({
         <aside className="predict-rail">
           <article className="panel flood-now">
             <div className="flood-now-head">
-              <div>
-                <p className="eyebrow">{selectedDate || asOf}</p>
+              <div className="flood-now-head-left">
+                <label className="prediction-plan-date">
+                  <span className="sr-only">Planning date</span>
+                  <input
+                    type="date"
+                    value={anchorDate}
+                    min={dateMin}
+                    max={dateMax}
+                    onChange={(event) => setAnchorDate(event.target.value)}
+                    aria-label="Planning date for flood outlook"
+                  />
+                </label>
                 <h2>Flood prediction</h2>
               </div>
               <label className="township-side">
-                Township
+                <span className="field-label">Township</span>
                 <select
                   value={selectedTownship}
                   onChange={(event) => chooseTownship(event.target.value)}
                   disabled={!areas.data}
+                  aria-label="Township"
                 >
                   {!areas.data && <option value="">Loading townships…</option>}
                   {selectableDistricts.map((district) => (
@@ -358,8 +412,29 @@ export default function FloodPredictionDashboard({
                 </select>
               </label>
             </div>
-            <DailyDetailPanel day={selectedDay} inTrainingSet={inTrainingSet} />
-            {timeline.state === "loading" && <p className="hint">Loading joined outlook…</p>}
+            {demoBanner ? <p className="state demo-banner">{demoBanner}</p> : null}
+            <DailyDetailPanel day={demoDay} inTrainingSet={inTrainingSet} />
+            <AllocationPrompt
+              day={demoDay}
+              townshipName={selectedTownshipMeta?.name ?? "Selected township"}
+              onPlanResources={() => {
+                if (!onPlanResources || !demoDay || !selectedTownshipMeta) return;
+                onPlanResources({
+                  townshipId: selectedTownship,
+                  townshipName: selectedTownshipMeta.name,
+                  date: demoDay.date,
+                  riskLevel: demoDay.probability_risk_level ?? "low",
+                  latitude: selectedTownshipMeta.latitude,
+                  longitude: selectedTownshipMeta.longitude,
+                });
+              }}
+            />
+            {timeline.state === "loading" && (
+              <p className="hint">
+                Loading hydrology for {anchorDate} (Open-Meteo, NASA POWER, GloFAS) — past dates can
+                take up to 2 minutes…
+              </p>
+            )}
             {timeline.state === "error" && <p className="state error">Unavailable: {timeline.error}</p>}
           </article>
 
@@ -367,7 +442,7 @@ export default function FloodPredictionDashboard({
             <div className="history-scroll">
               <DayGroup
                 title="Previous 7 days"
-                source={asOf}
+                source={anchorDate}
                 days={pastDays}
                 selectedDate={selectedDate}
                 showEmpty={timelineReady}

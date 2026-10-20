@@ -254,7 +254,6 @@ button.text-link, .text-link {
 
 .predict-toolbar { display: grid; gap: .8rem; }
 .predict-toolbar-head { display: flex; justify-content: space-between; gap: 1rem; align-items: end; }
-.township-side { min-width: 220px; }
 .time-range-nav { display: flex; flex-wrap: wrap; gap: .45rem; }
 .time-range-nav button {
   margin: 0; min-height: 40px; padding: .4rem .9rem; color: var(--text); background: #f4f7fb;
@@ -268,7 +267,37 @@ button.text-link, .text-link {
   display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(280px, .7fr); gap: 1rem; align-items: start;
 }
 .predict-rail { display: grid; gap: 1rem; }
-.flood-now-head { display: flex; justify-content: space-between; gap: 1rem; align-items: start; margin-bottom: .8rem; }
+.flood-now-head {
+  display: flex; justify-content: space-between; gap: 1rem; align-items: end; margin-bottom: .8rem;
+}
+.flood-now-head-left { display: grid; gap: .15rem; min-width: 0; }
+.flood-now-head-left h2 { margin: 0; line-height: 1.15; }
+.prediction-plan-date { display: block; margin: 0; }
+.prediction-plan-date input[type="date"] {
+  margin: 0;
+  padding: 0;
+  width: auto;
+  max-width: 100%;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: var(--blue);
+  font: inherit;
+  font-size: .95rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+.prediction-plan-date input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(0.65) sepia(0.4) saturate(4) hue-rotate(175deg);
+  cursor: pointer;
+}
+.township-side {
+  display: grid; gap: .35rem; min-width: 220px; justify-items: stretch; text-align: left;
+}
+.township-side .field-label {
+  color: var(--muted); font-size: .68rem; font-weight: 800; text-transform: uppercase;
+}
+.township-side select { width: 100%; min-height: 38px; padding: .45rem .55rem; border-radius: 10px; }
 .township-chip {
   display: inline-flex; align-items: center; min-height: 32px; padding: 0 .7rem;
   background: var(--blue-soft); color: var(--blue-deep); border-radius: 999px; font-size: .75rem; font-weight: 800;
@@ -331,7 +360,9 @@ button.text-link, .text-link {
   display: flex; flex-direction: column; gap: .75rem;
 }
 .workspace.page-prediction .flood-now { flex: 0 0 auto; }
-.workspace.page-prediction .flood-now-head { margin-bottom: .55rem; }
+.workspace.page-prediction .flood-now-head { margin-bottom: .55rem; align-items: end; }
+.workspace.page-prediction .prediction-plan-date input[type="date"] { color: #6ec2ff; }
+.workspace.page-prediction .flood-now-head-left h2 { font-size: 1.35rem; font-weight: 800; }
 .workspace.page-prediction .history-panel {
   flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
 }
@@ -362,6 +393,42 @@ button.text-link, .text-link {
 }
 .workspace.page-prediction .flood-now-grid > div:nth-child(5) { grid-column: auto; }
 .workspace.page-prediction .flood-now-grid strong { color: #f4f8fc; }
+.demo-banner {
+  margin: 0 0 .65rem;
+  padding: .55rem .75rem;
+  border-radius: 10px;
+  border: 1px dashed rgba(196, 146, 18, .55);
+  color: #e8c56a;
+  font-size: .82rem;
+}
+
+.allocation-prompt {
+  margin-top: .85rem;
+  padding: .85rem .95rem;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,.08);
+  background: rgba(8, 18, 28, .45);
+}
+.allocation-prompt.allocate { border-color: rgba(216, 106, 26, .45); }
+.allocation-prompt.calm { border-color: rgba(45, 156, 108, .35); }
+.allocation-prompt p { margin: 0 0 .75rem; line-height: 1.45; }
+.allocation-prompt .allocation-action { width: 100%; justify-content: center; }
+.allocation-focus-card h3 { margin: .15rem 0 .45rem; font-size: 1.25rem; }
+.allocation-sex-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: .65rem;
+  margin: .75rem 0;
+}
+.allocation-sex-grid span {
+  display: block;
+  color: var(--muted);
+  font-size: .68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+.allocation-sex-grid strong { font-size: 1.15rem; }
+
 .workspace.page-prediction .flood-now .hint {
   margin: .45rem 0 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
 }

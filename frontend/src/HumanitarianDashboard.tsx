@@ -4,14 +4,10 @@ import type {
   AdminDistrict,
   AssistancePriority,
   BagoAreasResponse,
-  CensusResponse,
-  DwellingCount,
-  DwellingTypeLabel,
   HelpBriefResponse,
   HelpDay,
   HelpResponse,
   LoadState,
-  TopographyResponse,
 } from "./types";
 
 interface Resource<T> {
@@ -47,20 +43,6 @@ function selectedPlace(districts: AdminDistrict[] | undefined, townshipId: strin
   return undefined;
 }
 
-function censusPlace(census: CensusResponse | undefined, districtName: string, townshipName: string) {
-  const district = census?.districts.find((item) => item.name_en === districtName);
-  const township = district?.townships.find((item) => item.name_en === townshipName);
-  return district && township ? { district, township } : undefined;
-}
-
-function dwellingRows(types: DwellingTypeLabel[], counts: DwellingCount) {
-  return types.map((item) => ({
-    key: item.key,
-    name: item.name_en,
-    households: counts[item.key],
-  }));
-}
-
 function peakDay(days: HelpDay[]): HelpDay {
   return days.reduce((best, day) =>
     day.expected_affected_people > best.expected_affected_people ? day : best,
@@ -73,7 +55,6 @@ interface HumanitarianDashboardProps {
   onTownshipChange: (townshipId: string) => void;
   startDate: string;
   onStartDate: (value: string) => void;
-  topography: Resource<TopographyResponse>;
 }
 
 export default function HumanitarianDashboard({
@@ -82,30 +63,13 @@ export default function HumanitarianDashboard({
   onTownshipChange,
   startDate,
   onStartDate,
-  topography,
 }: HumanitarianDashboardProps) {
   const [brief, setBrief] = useState<Resource<HelpBriefResponse>>(loading);
-  const [census, setCensus] = useState<Resource<CensusResponse>>(loading);
   const [help, setHelp] = useState<Resource<HelpResponse>>({ state: "empty" });
   const place = useMemo(
     () => selectedPlace(areas.data?.districts, selectedTownship),
     [areas.data, selectedTownship],
   );
-
-  useEffect(() => {
-    let active = true;
-    void api.census().then(
-      (result) => {
-        if (active) setCensus({ state: "ready", data: result });
-      },
-      (reason: unknown) => {
-        if (active) setCensus({ state: "error", error: errorText(reason) });
-      },
-    );
-    return () => {
-      active = false;
-    };
-  }, []);
 
   useEffect(() => {
     let active = true;
@@ -143,7 +107,6 @@ export default function HumanitarianDashboard({
   };
 
   const focus = help.data?.days.length ? peakDay(help.data.days) : undefined;
-  const base = censusPlace(census.data, place?.district.name_en ?? "", place?.township.name_en ?? "");
 
   return (
     <main>
@@ -153,14 +116,10 @@ export default function HumanitarianDashboard({
             <p className="eyebrow">Humanitarian assistance sector</p>
             <h2>Flood help planning</h2>
           </div>
-          <span className="source">Model: flood-help-v2</span>
+          <span className="source">Model: flood-help-v1</span>
         </div>
         <p className="hint">
-          This view estimates who may need help. The flood-help model uses forecast rainfall,
-          modelled discharge, location, seasonality, and recent conditions. Recorded household
-          and population counts stay out of the prediction inputs. Shelter, food, and water
-          figures apply fixed planning ratios to the expected counts. Untouched test help-class
-          F1 is about 0.02, so the caseload is a research estimate.
+          This view estimates who may need help. The flood-help model uses rainfall, modelled discharge, soil wetness, and recent conditions. Recorded household and population counts stay out of the prediction inputs. Shelter, food, and water figures apply fixed planning ratios to the expected counts.
         </p>
       </section>
 
@@ -194,10 +153,6 @@ export default function HumanitarianDashboard({
             </div>
             <span className="source">Source: /help</span>
           </div>
-          <p className="hint">
-            Choose a date inside the Open-Meteo and GloFAS outlook window. Earlier API days are
-            used only as context for lagged and rolling features.
-          </p>
           <form onSubmit={submitHelp}>
             <div className="form-grid">
               <label>
@@ -232,12 +187,6 @@ export default function HumanitarianDashboard({
           {place && (
             <p className="place-note">
               {place.township.name_en}, {place.district.name_en} District
-            </p>
-          )}
-          {topography.state === "ready" && topography.data && (
-            <p className="hint">
-              Centroid surface elevation {topography.data.elevation_m.toLocaleString()} m from{" "}
-              {topography.data.source}. {topography.data.note}
             </p>
           )}
           <StateMessage resource={help} empty="Choose a start date to estimate assistance need." />
@@ -301,112 +250,6 @@ export default function HumanitarianDashboard({
             <p className="state">Load an assistance outlook to see the 3-day package.</p>
           )}
         </article>
-      </section>
-
-      <section className="panel historical">
-        <div className="section-heading">
-          <div>
-            <p className="eyebrow">2024 census</p>
-            <h2>Base population and living situation</h2>
-          </div>
-          <span className="source">Source: /census</span>
-        </div>
-        <p className="hint">
-          This is the published Bago population base. The flood-help model does not use these
-          counts. Age groups are published for the region and each district. Household size and
-          dwelling type describe how people live in the selected township.
-        </p>
-        <StateMessage resource={census} empty="No census reference returned." />
-        {census.state === "ready" && census.data && (
-          <>
-            <div className="kpi-grid">
-              <article className="package">
-                <span>Bago Region people</span>
-                <strong>{census.data.population.total.total.toLocaleString()}</strong>
-              </article>
-              <article className="package">
-                <span>Urban residents</span>
-                <strong>{census.data.population.urban.total.toLocaleString()}</strong>
-              </article>
-              <article className="package">
-                <span>Rural residents</span>
-                <strong>{census.data.population.rural.total.toLocaleString()}</strong>
-              </article>
-              <article className="package">
-                <span>Households</span>
-                <strong>{census.data.households.total.toLocaleString()}</strong>
-              </article>
-            </div>
-            {base ? (
-              <div className="hero-grid census-block">
-                <div>
-                  <h2>
-                    {base.township.name_en} population
-                  </h2>
-                  <p className="hint">
-                    {base.township.population.male.toLocaleString()} male and{" "}
-                    {base.township.population.female.toLocaleString()} female.{" "}
-                    {base.township.households.total.toLocaleString()} households in{" "}
-                    {base.district.name_en} District.
-                  </p>
-                  <div className="history-table" role="table" aria-label="Household size">
-                    <div className="history-row census-split header" role="row">
-                      <span>Household size</span>
-                      <span>Households</span>
-                    </div>
-                    {base.township.households.by_size.map((bucket) => (
-                      <div className="history-row census-split" role="row" key={bucket.size}>
-                        <strong>{bucket.size === "9+" ? "9 or more people" : `${bucket.size} people`}</strong>
-                        <span>{bucket.households.toLocaleString()}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="history-table census-block" role="table" aria-label="Dwelling type">
-                    <div className="history-row census-split header" role="row">
-                      <span>Dwelling type</span>
-                      <span>Households</span>
-                    </div>
-                    {dwellingRows(census.data.dwelling_types, base.township.households.by_dwelling).map((row) => (
-                      <div className="history-row census-split" role="row" key={row.key}>
-                        <strong>{row.name}</strong>
-                        <span>{row.households.toLocaleString()}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                <div>
-                  <h2>{base.district.name_en} District age groups</h2>
-                  <p className="hint">
-                    {base.district.population.total.toLocaleString()} people live in this district.
-                    The census does not split these ages down to {base.township.name_en} Township.
-                  </p>
-                  <div className="history-table census-scroll" role="table" aria-label="District age groups">
-                    <div className="history-row census-age header" role="row">
-                      <span>Age</span>
-                      <span>People</span>
-                      <span>Male</span>
-                      <span>Female</span>
-                      <span>Urban</span>
-                      <span>Rural</span>
-                    </div>
-                    {base.district.age_groups.map((group) => (
-                      <div className="history-row census-age" role="row" key={group.label}>
-                        <strong>{group.label}</strong>
-                        <span>{group.total.total.toLocaleString()}</span>
-                        <span>{group.total.male.toLocaleString()}</span>
-                        <span>{group.total.female.toLocaleString()}</span>
-                        <span>{group.urban.total.toLocaleString()}</span>
-                        <span>{group.rural.total.toLocaleString()}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <p className="state">Choose a Bago township to see its census base.</p>
-            )}
-          </>
-        )}
       </section>
 
       <section className="panel historical">

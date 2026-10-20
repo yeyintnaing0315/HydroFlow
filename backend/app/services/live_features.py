@@ -6,7 +6,11 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from app.services import clients
+from app.services.hydro_history import GLOFAS_DISCHARGE_START
+from app.services.hydro_local_store import local_observations_for_range
 
 DailyObservation = tuple[date, float, float]
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -186,7 +190,7 @@ async def _fetch_live(
     discharge_task = clients.glofas_daily_discharge(
         river_latitude, river_longitude, CONTEXT_DAYS, FORECAST_DAYS
     )
-    nasa_task = clients.nasa_power_history(latitude, longitude, history_start, history_end)
+    nasa_task = clients.nasa_power_history_range(latitude, longitude, history_start, history_end)
     weather, discharge, nasa = await asyncio.gather(
         weather_task, discharge_task, nasa_task, return_exceptions=True
     )
@@ -287,3 +291,136 @@ def features_on_or_after(
 def row_has_model_features(row: dict[str, Any], feature_names: list[str] | tuple[str, ...] | None) -> bool:
     names = feature_names or NEW_MODEL_FEATURES
     return all(row.get(name) is not None for name in names)
+
+
+def _apply_weather_row(by_day: dict[date, dict[str, Any]], row: dict[str, date | float | None], *, source: str) -> None:
+    day = row["date"]
+    assert isinstance(day, date)
+    existing = by_day.setdefault(day, {"date": day})
+    if row.get("rainfall_mm") is not None:
+        existing["rainfall_mm"] = float(row["rainfall_mm"])
+        existing["rainfall_source"] = source
+    for key in ("temperature_c", "relative_humidity_pct", "wind_speed_m_s"):
+        if row.get(key) is not None:
+            existing[key] = float(row[key])
+    existing.setdefault("meteorology_source", source)
+
+
+async def _fetch_reanalysis_window(
+    latitude: float,
+    longitude: float,
+    river_latitude: float,
+    river_longitude: float,
+    start: date,
+    end: date,
+) -> tuple[list[dict[str, date | float | None]], list[tuple[date, float | None]]]:
+    import asyncio
+
+    weather_task = clients.open_meteo_archive_daily_weather(latitude, longitude, start, end)
+    discharge_task = clients.resolve_glofas_discharge_daily(river_latitude, river_longitude, start, end)
+    weather, discharge = await asyncio.gather(weather_task, discharge_task, return_exceptions=True)
+    if isinstance(weather, Exception):
+        weather = []
+    if isinstance(discharge, Exception):
+        discharge = []
+    return weather, discharge
+
+
+async def observations_for_timeline(
+    township_id: str,
+    latitude: float,
+    longitude: float,
+    window_start: date,
+    window_end: date,
+    *,
+    catalog_township_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Merge CSV relief rows, long-range reanalysis (1984+), live APIs, and NASA met."""
+    catalog_id = catalog_township_id or township_id
+    today = datetime.now(timezone.utc).date()
+    context_start = window_start - timedelta(days=CONTEXT_DAYS)
+    fetch_end = max(window_end, today + timedelta(days=FORECAST_DAYS))
+    by_day: dict[date, dict[str, Any]] = {}
+    river = nearest_river_cell(latitude, longitude)
+    river_latitude = float(river["river_latitude"]) if river else latitude
+    river_longitude = float(river["river_longitude"]) if river else longitude
+
+    try:
+        from app.services.daily_catalog import catalog_observations
+
+        for row in catalog_observations(catalog_id):
+            day = row["date"]
+            if context_start <= day <= fetch_end:
+                by_day[day] = dict(row)
+    except FileNotFoundError:
+        pass
+
+    for row in local_observations_for_range(catalog_id, context_start, fetch_end):
+        day = row["date"]
+        by_day[day] = {**by_day.get(day, {"date": day}), **row}
+
+    reanalysis_start = max(context_start, GLOFAS_DISCHARGE_START)
+    reanalysis_end = min(fetch_end, today)
+    if reanalysis_start <= reanalysis_end:
+        try:
+            weather, discharge = await _fetch_reanalysis_window(
+                latitude,
+                longitude,
+                river_latitude,
+                river_longitude,
+                reanalysis_start,
+                reanalysis_end,
+            )
+            for row in weather:
+                _apply_weather_row(by_day, row, source="Open-Meteo ERA5 archive")
+            discharge_source = "Open-Meteo Flood API GloFAS (default reanalysis + fallbacks)"
+            for day, value in discharge:
+                if value is None:
+                    continue
+                existing = by_day.setdefault(day, {"date": day})
+                existing["river_discharge_m3s"] = float(value)
+                existing["discharge_source"] = discharge_source
+                if river is not None:
+                    existing.setdefault("river_township", river["township"])
+                    existing.setdefault("in_training_set", river["in_training_set"])
+        except (httpx.HTTPError, ValueError):
+            pass
+
+    try:
+        live = await load_observations(latitude, longitude)
+        for row in live:
+            if not isinstance(row, dict):
+                continue
+            day = row["date"]
+            if context_start <= day <= fetch_end:
+                by_day[day] = {**by_day.get(day, {"date": day}), **row}
+    except (httpx.HTTPError, ValueError):
+        pass
+
+    try:
+        nasa = await clients.nasa_power_history_range(
+            latitude,
+            longitude,
+            context_start,
+            fetch_end,
+        )
+        for point in nasa:
+            existing = by_day.setdefault(point.date, {"date": point.date})
+            if existing.get("rainfall_mm") is None and point.precipitation_mm is not None:
+                existing["rainfall_mm"] = float(point.precipitation_mm)
+                existing["rainfall_source"] = "NASA POWER PRECTOTCORR"
+            if existing.get("temperature_c") is None and point.temperature_c is not None:
+                existing["temperature_c"] = float(point.temperature_c)
+            if existing.get("relative_humidity_pct") is None and point.relative_humidity_pct is not None:
+                existing["relative_humidity_pct"] = float(point.relative_humidity_pct)
+            if existing.get("wind_speed_m_s") is None and point.wind_speed_m_s is not None:
+                existing["wind_speed_m_s"] = float(point.wind_speed_m_s)
+            existing.setdefault("meteorology_source", "NASA POWER")
+    except (httpx.HTTPError, ValueError):
+        pass
+
+    return [
+        by_day[day]
+        for day in sorted(by_day)
+        if by_day[day].get("rainfall_mm") is not None and by_day[day].get("river_discharge_m3s") is not None
+    ]

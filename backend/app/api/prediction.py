@@ -9,6 +9,7 @@ from app.schemas.api import (
     PredictionTimelineResponse,
 )
 from app.services import admin_areas, prediction as prediction_service
+from app.services.daily_catalog import calendar_bounds
 from app.services.prediction_timeline import build_timeline, local_today, map_scores_for_date
 
 router = APIRouter(tags=["prediction"])
@@ -19,6 +20,12 @@ def _ensure_model() -> None:
         prediction_service.load_model()
     except prediction_service.ModelUnavailableError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
+@router.get("/prediction/calendar-bounds")
+def get_prediction_calendar_bounds() -> dict[str, str]:
+    """Selectable timeline dates: validated history through live forecast (+7 days)."""
+    return calendar_bounds(local_today())
 
 
 @router.post("/prediction/timeline", response_model=PredictionTimelineResponse)

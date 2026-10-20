@@ -1,8 +1,8 @@
 import asyncio
 import os
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import httpx
 
@@ -10,7 +10,13 @@ from app.schemas.api import ForecastPoint, HistoricalPoint
 
 TIMEOUT_SECONDS = 10.0
 NASA_POWER_TIMEOUT_SECONDS = 45.0
+ARCHIVE_TIMEOUT_SECONDS = 120.0
+FLOOD_ARCHIVE_TIMEOUT_SECONDS = 120.0
 NASA_POWER_PARAMETERS = "PRECTOTCORR,T2M,RH2M,WS2M"
+REANALYSIS_CHUNK_DAYS = 730
+NASA_CHUNK_DAYS = 1095
+GLOFAS_PAST_DAYS_MAX = 365
+FLOOD_API_URL = "https://flood-api.open-meteo.com/v1/flood"
 POINT_ELEVATION_URL = "https://portal.opentopography.org/API/v1/elevation"
 ELEVATION_DATASET = "COP30"
 _elevation_cache: dict[tuple[float, float, str], dict[str, float | str]] = {}
@@ -96,6 +102,32 @@ async def nasa_power_history(
         ]
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("Invalid NASA POWER response") from exc
+
+
+def _date_chunks(start: date, end: date, chunk_days: int) -> Iterator[tuple[date, date]]:
+    if start > end:
+        return
+    cursor = start
+    while cursor <= end:
+        chunk_end = min(end, cursor + timedelta(days=chunk_days - 1))
+        yield cursor, chunk_end
+        cursor = chunk_end + timedelta(days=1)
+
+
+async def nasa_power_history_range(
+    latitude: float, longitude: float, start: date, end: date
+) -> list[HistoricalPoint]:
+    """NASA POWER daily point API with multi-year chunking."""
+    if start > end:
+        return []
+    by_day: dict[date, HistoricalPoint] = {}
+    for chunk_start, chunk_end in _date_chunks(start, end, NASA_CHUNK_DAYS):
+        try:
+            for point in await nasa_power_history(latitude, longitude, chunk_start, chunk_end):
+                by_day[point.date] = point
+        except (httpx.HTTPError, ValueError):
+            continue
+    return [by_day[day] for day in sorted(by_day)]
 
 
 async def open_meteo_forecast(latitude: float, longitude: float) -> list[ForecastPoint]:
@@ -233,11 +265,142 @@ async def open_meteo_daily_weather(
         raise ValueError("Invalid Open-Meteo daily weather response") from exc
 
 
+async def open_meteo_archive_daily_weather(
+    latitude: float, longitude: float, start: date, end: date
+) -> list[dict[str, date | float | None]]:
+    """ERA5-based daily met from the Open-Meteo historical archive API."""
+    if start > end:
+        return []
+    merged: dict[date, dict[str, date | float | None]] = {}
+    params_base = {
+        "latitude": latitude,
+        "longitude": longitude,
+        "daily": "precipitation_sum,temperature_2m_mean,relative_humidity_2m_mean,wind_speed_10m_mean",
+        "timezone": "UTC",
+        "wind_speed_unit": "ms",
+    }
+    for chunk_start, chunk_end in _date_chunks(start, end, REANALYSIS_CHUNK_DAYS):
+        params = {
+            **params_base,
+            "start_date": chunk_start.isoformat(),
+            "end_date": chunk_end.isoformat(),
+        }
+        payload = await _request_json(
+            "https://archive-api.open-meteo.com/v1/archive",
+            params,
+            timeout=ARCHIVE_TIMEOUT_SECONDS,
+        )
+        try:
+            daily = payload["daily"]
+            times = daily["time"]
+            rainfall = daily["precipitation_sum"]
+            temperature = daily["temperature_2m_mean"]
+            humidity = daily["relative_humidity_2m_mean"]
+            wind = daily["wind_speed_10m_mean"]
+            if not (
+                len(times) == len(rainfall) == len(temperature) == len(humidity) == len(wind)
+            ):
+                raise ValueError
+            for index, timestamp in enumerate(times):
+                day = datetime.fromisoformat(timestamp).date()
+                merged[day] = {
+                    "date": day,
+                    "rainfall_mm": _number(rainfall[index]),
+                    "temperature_c": _number(temperature[index]),
+                    "relative_humidity_pct": _number(humidity[index]),
+                    "wind_speed_m_s": _number(wind[index]),
+                }
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("Invalid Open-Meteo archive daily weather response") from exc
+    return [merged[day] for day in sorted(merged)]
+
+
+async def _glofas_discharge_date_range(
+    latitude: float,
+    longitude: float,
+    start: date,
+    end: date,
+    *,
+    models: str | None,
+) -> dict[date, float | None]:
+    today = datetime.now(timezone.utc).date()
+    merged: dict[date, float | None] = {}
+    for chunk_start, chunk_end in _date_chunks(start, end, REANALYSIS_CHUNK_DAYS):
+        params: dict[str, object] = {
+            "latitude": latitude,
+            "longitude": longitude,
+            "daily": "river_discharge",
+            "start_date": chunk_start.isoformat(),
+            "end_date": chunk_end.isoformat(),
+        }
+        if models:
+            params["models"] = models
+        if chunk_end >= today:
+            params["forecast_days"] = max(0, (chunk_end - today).days)
+        else:
+            params["forecast_days"] = 0
+        rows = await _daily_values(FLOOD_API_URL, params, "river_discharge")
+        for day, value in rows:
+            merged[day] = value
+    return merged
+
+
+async def resolve_glofas_discharge_daily(
+    latitude: float, longitude: float, start: date, end: date
+) -> list[tuple[date, float | None]]:
+    """Best-effort GloFAS discharge for a calendar window.
+
+    Open-Meteo's default flood model (no ``models`` param) covers recent years including
+    2026. ``consolidated_v4`` alone often returns null for recent dates; it is used only
+    to back-fill gaps. ``past_days`` covers any remaining holes near the present.
+    """
+    if start > end:
+        return []
+    merged = await _glofas_discharge_date_range(latitude, longitude, start, end, models=None)
+    missing = [day for day, value in merged.items() if value is None]
+    if missing:
+        gap_start, gap_end = min(missing), max(missing)
+        legacy = await _glofas_discharge_date_range(
+            latitude, longitude, gap_start, gap_end, models="consolidated_v4"
+        )
+        for day, value in legacy.items():
+            if merged.get(day) is None and value is not None:
+                merged[day] = value
+
+    today = datetime.now(timezone.utc).date()
+    still_missing = [day for day in sorted(merged) if merged[day] is None and day <= today]
+    if still_missing and start <= today:
+        past_days = min(GLOFAS_PAST_DAYS_MAX, (today - min(start, still_missing[0])).days + 1)
+        forecast_days = max(0, (end - today).days)
+        try:
+            for day, value in await glofas_daily_discharge(
+                latitude, longitude, past_days=past_days, forecast_days=forecast_days
+            ):
+                if start <= day <= end and value is not None and merged.get(day) is None:
+                    merged[day] = value
+        except (httpx.HTTPError, ValueError):
+            pass
+
+    cursor = start
+    output: list[tuple[date, float | None]] = []
+    while cursor <= end:
+        output.append((cursor, merged.get(cursor)))
+        cursor += timedelta(days=1)
+    return output
+
+
+async def glofas_discharge_daily_range(
+    latitude: float, longitude: float, start: date, end: date
+) -> list[tuple[date, float | None]]:
+    """GloFAS river discharge via Open-Meteo Flood API (multi-strategy resolver)."""
+    return await resolve_glofas_discharge_daily(latitude, longitude, start, end)
+
+
 async def glofas_daily_discharge(
     latitude: float, longitude: float, past_days: int = 7, forecast_days: int = 7
 ) -> list[tuple[date, float | None]]:
     return await _daily_values(
-        "https://flood-api.open-meteo.com/v1/flood",
+        FLOOD_API_URL,
         {
             "latitude": latitude,
             "longitude": longitude,

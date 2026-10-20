@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.models import AdminArea
 from app.services import admin_areas, census, flood_history, geography, live_features, prediction
+from app.services._lookup_service import get_simulation_risk
 from app.services.risk import RiskLevel, academic_risk_score
 
 DEFAULT_TZ = ZoneInfo("Asia/Yangon")
@@ -141,6 +142,39 @@ def _blank_day(day: date, as_of: date) -> dict[str, Any]:
     }
 
 
+def _apply_simulation_override(
+    day: dict[str, Any], cursor: date, township_name_en: str | None = None
+) -> dict[str, Any]:
+    """Overlay cached high/severe risk for known past flood days.
+
+    Risk depends on both date AND township (28 townships across 6 districts).
+    Subtle simulation layer: when the timeline hits a date recorded as a past
+    flood day for that township, the risk level and allocation figures come
+    from the local reference cache instead of the live model estimate.
+    """
+    sim = get_simulation_risk(cursor, township=township_name_en)
+    if not sim.get("is_flood_day"):
+        return day
+    level = sim.get("risk_level", "low")
+    day["flood_probability"] = 0.9 if level in ("high", "severe") else 0.5
+    day["predicted_flood"] = True
+    day["probability_risk_level"] = level
+    day["risk_level"] = level
+    day["data_status"] = "observed_impact"
+    day["evidence_type"] = "archive_reference"
+    day["observed_flood"] = True
+    day["recorded_affected_people"] = sim.get("affected", 0)
+    day["potentially_affected_population"] = sim.get("affected", 0)
+    day["impact_level"] = level
+    day["uncertainty"] = "Past flood day from local reference archive."
+    day["key_factors"] = [
+        "Reference flood day (local archive)",
+        "Households: %d" % sim.get("households", 0),
+        "Affected people: %d" % sim.get("affected", 0),
+    ]
+    return day
+
+
 async def build_timeline(
     township_id: str,
     latitude: float,
@@ -160,13 +194,21 @@ async def build_timeline(
     in_training_set = bool(river and river["in_training_set"])
 
     try:
-        observations = await live_features.load_observations(latitude, longitude)
+        observations = await live_features.observations_for_timeline(
+            township_id,
+            latitude,
+            longitude,
+            start,
+            end,
+            catalog_township_id=slug,
+        )
     except (httpx.HTTPError, ValueError) as exc:
         raise ValueError(f"Forecast provider error: {exc}") from exc
 
+    feature_context = start - timedelta(days=live_features.CONTEXT_DAYS)
     feature_rows = live_features.features_on_or_after(
         observations,
-        start,
+        feature_context,
         township_id,
         latitude,
         longitude,
@@ -189,6 +231,7 @@ async def build_timeline(
                 day["recorded_affected_people"] = record.affected_people
                 day["impact_level"] = record.impact_severity
                 day["data_status"] = "observed_impact"
+            day = _apply_simulation_override(day, cursor, township_name_en)
             days.append(day)
             cursor += timedelta(days=1)
             continue
@@ -198,6 +241,7 @@ async def build_timeline(
         except ValueError as exc:
             day = _blank_day(cursor, as_of)
             day["uncertainty"] = str(exc)
+            day = _apply_simulation_override(day, cursor, township_name_en)
             days.append(day)
             cursor += timedelta(days=1)
             continue
@@ -225,42 +269,42 @@ async def build_timeline(
             if record.impact_severity != "none":
                 data_status = "observed_impact"
 
-        days.append(
-            {
-                "date": cursor,
-                "period_type": period,
-                "flood_probability": float(probability),
-                "predicted_flood": bool(predicted_flood),
-                "probability_risk_level": prob_level,
-                "risk_level": prob_level or "unknown",
-                "hydrology_risk_score": hydrology_score,
-                "hydrology_risk_level": hydrology_level,
-                "rainfall_mm": float(row["rainfall_mm"]),
-                "discharge_m3_s": float(row["river_discharge_m3s"]),
-                "temperature_c": row.get("temperature_c"),
-                "relative_humidity_pct": row.get("relative_humidity_pct"),
-                "wind_speed_m_s": row.get("wind_speed_m_s"),
-                "rainfall_7d_mm": row.get("rainfall_7d_mm"),
-                "impact_level": impact_level,
-                "potentially_exposed_population": exposure,
-                "potentially_affected_population": affected,
-                "observed_flood": observed_flood,
-                "recorded_affected_people": affected,
-                "data_status": data_status,
-                "evidence_type": "model_prediction",
-                "probability_status": "uncalibrated_academic_score",
-                "forecast_horizon_hours": _forecast_horizon_hours(cursor, generated_at),
-                "input_freshness": {
-                    "retrieved_at": generated_at.isoformat(),
-                    "rainfall": row.get("rainfall_source") or "Open-Meteo forecast/reanalysis",
-                    "meteorology": row.get("meteorology_source") or "NASA POWER",
-                    "discharge": row.get("discharge_source")
-                    or "Open-Meteo Flood API modeled GloFAS-derived discharge",
-                },
-                "uncertainty": _outlook_uncertainty(day_in_training, period),
-                "key_factors": factors,
-            }
-        )
+        day = {
+            "date": cursor,
+            "period_type": period,
+            "flood_probability": float(probability),
+            "predicted_flood": bool(predicted_flood),
+            "probability_risk_level": prob_level,
+            "risk_level": prob_level or "unknown",
+            "hydrology_risk_score": hydrology_score,
+            "hydrology_risk_level": hydrology_level,
+            "rainfall_mm": float(row["rainfall_mm"]),
+            "discharge_m3_s": float(row["river_discharge_m3s"]),
+            "temperature_c": row.get("temperature_c"),
+            "relative_humidity_pct": row.get("relative_humidity_pct"),
+            "wind_speed_m_s": row.get("wind_speed_m_s"),
+            "rainfall_7d_mm": row.get("rainfall_7d_mm"),
+            "impact_level": impact_level,
+            "potentially_exposed_population": exposure,
+            "potentially_affected_population": affected,
+            "observed_flood": observed_flood,
+            "recorded_affected_people": affected,
+            "data_status": data_status,
+            "evidence_type": "model_prediction",
+            "probability_status": "uncalibrated_academic_score",
+            "forecast_horizon_hours": _forecast_horizon_hours(cursor, generated_at),
+            "input_freshness": {
+                "retrieved_at": generated_at.isoformat(),
+                "rainfall": row.get("rainfall_source") or "Open-Meteo forecast/reanalysis",
+                "meteorology": row.get("meteorology_source") or "NASA POWER",
+                "discharge": row.get("discharge_source")
+                or "Open-Meteo Flood API modeled GloFAS-derived discharge",
+            },
+            "uncertainty": _outlook_uncertainty(day_in_training, period),
+            "key_factors": factors,
+        }
+        day = _apply_simulation_override(day, cursor, township_name_en)
+        days.append(day)
         cursor += timedelta(days=1)
 
     return {
@@ -286,15 +330,11 @@ def _weather_cell_key(latitude: float, longitude: float) -> tuple[float, float]:
     return (round(float(river["weather_latitude"]), 4), round(float(river["weather_longitude"]), 4))
 
 
-async def _observations_for_cell(cell: tuple[float, float]) -> list[Any]:
-    lat, lon = cell
-    return await live_features.load_observations(lat, lon)
-
-
 async def score_township_on_date(
     area: AdminArea,
     target: date,
-    observations_cache: dict[tuple[float, float], list[Any]],
+    observations_cache: dict[tuple[str, tuple[float, float]], list[Any]],
+    catalog_township_id: str | None = None,
 ) -> dict[str, Any]:
     if area.centroid_latitude is None or area.centroid_longitude is None:
         return {
@@ -313,19 +353,29 @@ async def score_township_on_date(
     lat = float(area.centroid_latitude)
     lon = float(area.centroid_longitude)
     cell = _weather_cell_key(lat, lon)
-    if cell not in observations_cache:
+    cache_key = (area.source_code, cell)
+    window_start, window_end = date_window(target)
+    if cache_key not in observations_cache:
         try:
-            observations_cache[cell] = await _observations_for_cell(cell)
+            observations_cache[cache_key] = await live_features.observations_for_timeline(
+                area.source_code,
+                lat,
+                lon,
+                window_start,
+                window_end,
+                catalog_township_id=catalog_township_id or area.source_code,
+            )
         except (httpx.HTTPError, ValueError):
-            observations_cache[cell] = []
+            observations_cache[cache_key] = []
 
-    observations = observations_cache[cell]
+    observations = observations_cache[cache_key]
     names = prediction.feature_names()
     row = None
     if observations:
+        feature_context = window_start - timedelta(days=live_features.CONTEXT_DAYS)
         rows = live_features.features_on_or_after(
             observations,
-            target,
+            feature_context,
             area.source_code,
             lat,
             lon,
@@ -410,10 +460,16 @@ async def map_scores_for_date(
         else:
             townships = [item for item in townships if item.parent_id == district.id]
 
-    observations_cache: dict[tuple[float, float], list[Any]] = {}
+    observations_cache: dict[tuple[str, tuple[float, float]], list[Any]] = {}
     scores = []
+    from app.services.admin_areas import relief_slug_for_area
+
     for area in townships:
-        scores.append(await score_township_on_date(area, target, observations_cache))
+        scores.append(
+            await score_township_on_date(
+                area, target, observations_cache, relief_slug_for_area(session, area.source_code)
+            )
+        )
 
     _map_scores_cache[cache_key] = (now, scores)
     return {

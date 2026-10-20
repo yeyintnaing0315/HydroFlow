@@ -46,6 +46,12 @@ vi.mock("./api", () => ({
       classes: [],
       movements: [],
     })),
+    predictionCalendarBounds: vi.fn().mockResolvedValue({
+      history_start: "1984-01-01",
+      history_end: "2026-10-20",
+      forecast_end: "2026-10-27",
+      select_max: "2026-10-27",
+    }),
     predictionTimeline: vi.fn().mockResolvedValue({
       township_id: "MMR007001701",
       as_of: "2026-10-19",
@@ -435,7 +441,7 @@ describe("dashboard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Resource Allocation" }));
     expect(await screen.findByRole("heading", { name: "Route map" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Affected people" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Affected population" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Allocation plan" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Create plan" })).toBeInTheDocument();
   }, 30000);

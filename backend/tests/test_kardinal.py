@@ -1,9 +1,10 @@
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.schemas.api import RoutePlanRequest, RouteStop
-from app.services import kardinal
+from app.services import clients, kardinal
 
 client = TestClient(app)
 
@@ -95,7 +96,7 @@ class FakeKardinal:
 def test_route_orders_stops_and_hides_the_key(monkeypatch) -> None:
     fake = FakeKardinal()
     monkeypatch.setenv("KARDINAL_API_KEY", "test-kardinal-token")
-    monkeypatch.setattr(kardinal, "_load_project_env", lambda: None)
+    monkeypatch.setattr(clients, "_load_project_env", lambda: None)
     monkeypatch.setattr(kardinal.httpx, "AsyncClient", lambda **kwargs: fake)
 
     response = client.post("/routes", json=_request())
@@ -123,7 +124,7 @@ def test_route_orders_stops_and_hides_the_key(monkeypatch) -> None:
 
 def test_route_reports_a_missing_key(monkeypatch) -> None:
     monkeypatch.delenv("KARDINAL_API_KEY", raising=False)
-    monkeypatch.setattr(kardinal, "_load_project_env", lambda: None)
+    monkeypatch.setattr(clients, "_load_project_env", lambda: None)
     response = client.post("/routes", json=_request())
     assert response.status_code == 503
     assert response.json()["detail"] == "KARDINAL_API_KEY is not set"
@@ -132,7 +133,7 @@ def test_route_reports_a_missing_key(monkeypatch) -> None:
 def test_route_redacts_the_key_from_provider_errors(monkeypatch) -> None:
     fake = FakeKardinal(fail_status=401)
     monkeypatch.setenv("KARDINAL_API_KEY", "test-kardinal-token")
-    monkeypatch.setattr(kardinal, "_load_project_env", lambda: None)
+    monkeypatch.setattr(clients, "_load_project_env", lambda: None)
     monkeypatch.setattr(kardinal.httpx, "AsyncClient", lambda **kwargs: fake)
     response = client.post("/routes", json=_request())
     assert response.status_code == 502

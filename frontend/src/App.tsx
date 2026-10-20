@@ -1,12 +1,13 @@
 import { Component, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api } from "./api";
 import DashboardHome from "./DashboardHome";
-import FloodPredictionDashboard from "./FloodPredictionDashboard";
+import FloodPredictionDashboard, { type PredictionMapContext } from "./FloodPredictionDashboard";
 import InventoryManagement from "./InventoryManagement";
 import MapsPage from "./MapsPage";
 import ReportsPage from "./ReportsPage";
 import ResourceAllocationDashboard from "./ResourceAllocationDashboard";
 import SettingsPage from "./SettingsPage";
+import type { AllocationFocus } from "./lib/allocationFocus";
 import type {
   BagoAreasResponse,
   HealthResponse,
@@ -141,8 +142,10 @@ function App() {
   const [inundation, setInundation] = useState<Resource<InundationProduct[]>>(loading);
   const [settlements, setSettlements] = useState<Resource<SettlementPoint[]>>(loading);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [predictionMapContext, setPredictionMapContext] = useState<PredictionMapContext | null>(null);
   const [startDate, setStartDate] = useState(initialStartDate);
   const [page, setPage] = useState<PageId>("home");
+  const [allocationFocus, setAllocationFocus] = useState<AllocationFocus | null>(null);
   const [noticeOpen, setNoticeOpen] = useState(false);
 
   useEffect(() => {
@@ -321,7 +324,12 @@ function App() {
             runs={runs}
             inundation={inundation}
             settlements={settlements}
-            onPlanResources={() => setPage("allocation")}
+            onMapContextChange={setPredictionMapContext}
+            onPlanResources={(focus) => {
+              setAllocationFocus(focus);
+              setStartDate(focus.date);
+              setPage("allocation");
+            }}
           />
         )}
 
@@ -329,6 +337,8 @@ function App() {
           <ResourceAllocationDashboard
             startDate={startDate}
             onStartDate={setStartDate}
+            focus={allocationFocus}
+            onClearFocus={() => setAllocationFocus(null)}
             onOpenInventory={() => setPage("inventory")}
           />
         )}

@@ -76,5 +76,5 @@ def predict_help(features: dict[str, float | str]) -> dict[str, float | int | bo
             * float(ratios["drinking_water_liters_per_person_day"])
             * float(ratios["planning_days"])
         ),
-        "model_version": str(metadata.get("version", "flood-help-v2")),
+        "model_version": str(metadata.get("version", "flood-help-v1")),
     }

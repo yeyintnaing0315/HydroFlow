@@ -107,6 +107,12 @@ vi.mock("./api", () => ({
         },
       ],
     }),
+    predictionCalendarBounds: vi.fn().mockResolvedValue({
+      history_start: "1984-01-01",
+      history_end: "2026-10-20",
+      forecast_end: "2026-10-27",
+      select_max: "2026-10-27",
+    }),
     predictionMapScores: vi.fn().mockResolvedValue({
       date: "2026-10-10",
       model_version: "test",
@@ -147,6 +153,52 @@ const areas = {
             name_local: "Bago",
             latitude: 17.3358,
             longitude: 96.4839,
+            level: 3,
+            area_type: "township",
+            coverage_status: "complete",
+          },
+          {
+            id: "MMR007001702",
+            slug: "daik-u",
+            name_en: "Daik-U",
+            name_local: "Daik-U",
+            latitude: 17.5,
+            longitude: 96.5,
+            level: 3,
+            area_type: "township",
+            coverage_status: "complete",
+          },
+        ],
+      },
+      {
+        id: "MMR007D004",
+        slug: "taungoo",
+        name_en: "Taungoo",
+        name_local: "Taungoo",
+        latitude: 18.9,
+        longitude: 96.4,
+        level: 2,
+        area_type: "district",
+        coverage_status: "complete",
+        townships: [
+          {
+            id: "MMR007004701",
+            slug: "taungoo-township",
+            name_en: "Taungoo",
+            name_local: "Taungoo",
+            latitude: 18.9,
+            longitude: 96.4,
+            level: 3,
+            area_type: "township",
+            coverage_status: "complete",
+          },
+          {
+            id: "MMR007004702",
+            slug: "htantabin",
+            name_en: "Htantabin",
+            name_local: "Htantabin",
+            latitude: 18.8,
+            longitude: 96.3,
             level: 3,
             area_type: "township",
             coverage_status: "complete",
@@ -196,5 +248,30 @@ describe("FloodPredictionDashboard", () => {
     expect(screen.queryByText("Temperature")).not.toBeInTheDocument();
     expect(screen.queryByText("Heuristic risk")).not.toBeInTheDocument();
     expect(screen.queryByText("Flood in next 3 days")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Plan resource allocation" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /2026-10-18/ }));
+    expect(await screen.findByText(/No allocation needed/i)).toBeInTheDocument();
+  });
+
+  it("filters the township dropdown when a district chip is selected", async () => {
+    render(
+      <FloodPredictionDashboard
+        areas={areas}
+        health={{ state: "ready", data: { status: "ok", service: "x", version: "1", database: { ready: true, missing_tables: [] }, models: { flood: true, help: true, allocation: true } } }}
+        runs={{ state: "empty" }}
+        inundation={{ state: "empty" }}
+        settlements={{ state: "empty" }}
+      />,
+    );
+
+    const townshipSelect = await screen.findByRole("combobox", { name: "Township" });
+    expect(within(townshipSelect).getByRole("option", { name: "Bago" })).toBeInTheDocument();
+    expect(within(townshipSelect).getByRole("option", { name: "Taungoo" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Taungoo" }));
+    expect(within(townshipSelect).queryByRole("option", { name: "Bago" })).not.toBeInTheDocument();
+    expect(within(townshipSelect).getByRole("option", { name: "Taungoo" })).toBeInTheDocument();
+    expect(townshipSelect).toHaveValue("MMR007004701");
   });
 });

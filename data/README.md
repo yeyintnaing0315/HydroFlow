@@ -7,5 +7,16 @@
   population by sex, urban and rural residence, age group, household size, and
   dwelling type. It is built from `2024_census_bago_report (update).xlsx`.
 
-Flood-model inputs stay in `raw/` and `processed/`. The census file is a
-planning reference, not a model feature.
+Long-range hydrology for prediction replay (optional local cache):
+
+- Run `python scripts/download_bago_hydro_sources.py --start 1984-01-01` to fetch
+  Open-Meteo ERA5 archive rainfall/met, NASA POWER daily met, and GloFAS discharge
+  into `external/open_meteo_archive_daily/`, `external/nasa_power_hydro/`,
+  `external/glofas_discharge/`, and merged `external/hydro_merged/` per township.
+- The API timeline prefers these files when present (live APIs still fill recent forecast days).
+
+Flood-model inputs stay in `raw/` and `processed/`. The census workbook
+(`2024_census_bago_report (update).xlsx`) and relief list
+(`ToPredit_Excel_Data.xlsx`) feed the allocation planner as baseline context
+(census population/households and township relief totals), alongside live flood
+and help model scores and warehouse stock.

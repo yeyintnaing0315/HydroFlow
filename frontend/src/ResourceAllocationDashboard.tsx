@@ -2,16 +2,24 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { api } from "./api";
 import { downloadAllocationPlanPdf } from "./allocationPlanPdf";
 import RouteMap, { type MapRoutePath, type MapStop } from "./components/RouteMap";
+import type { AllocationFocus } from "./lib/allocationFocus";
+import { errorText } from "./lib/formatError";
+import { splitAffectedBySex } from "./lib/populationSplit";
 import type {
   AllocationPlanResponse,
   AssistancePriority,
+  CensusResponse,
+  HelpDay,
   InventorySnapshot,
   LoadState,
+  TownshipCensus,
 } from "./types";
 
 interface ResourceAllocationDashboardProps {
   startDate: string;
   onStartDate: (value: string) => void;
+  focus?: AllocationFocus | null;
+  onClearFocus?: () => void;
   onOpenInventory?: () => void;
 }
 
@@ -22,8 +30,19 @@ interface Resource<T> {
 }
 
 const loading = <T,>(): Resource<T> => ({ state: "loading" });
-const errorText = (reason: unknown) =>
-  reason instanceof Error ? reason.message : "Unexpected request failure";
+
+function findTownshipCensus(census: CensusResponse | undefined, nameEn: string): TownshipCensus | undefined {
+  if (!census) return undefined;
+  for (const district of census.districts) {
+    const match = district.townships.find((township) => township.name_en === nameEn);
+    if (match) return match;
+  }
+  return undefined;
+}
+
+function helpDayForDate(days: HelpDay[], date: string): HelpDay | undefined {
+  return days.find((day) => day.date === date);
+}
 
 const PRIORITY_OPTIONS: AssistancePriority[] = ["moderate", "high", "severe"];
 
@@ -58,13 +77,23 @@ function depotLabel(region: RegionCode): string {
 export default function ResourceAllocationDashboard({
   startDate,
   onStartDate,
+  focus,
+  onClearFocus,
   onOpenInventory,
 }: ResourceAllocationDashboardProps) {
-  const [minPriority, setMinPriority] = useState<AssistancePriority>("moderate");
+  const [minPriority, setMinPriority] = useState<AssistancePriority>(focus ? "high" : "moderate");
   const [inventoryEast, setInventoryEast] = useState<Resource<InventorySnapshot>>(loading);
   const [inventoryWest, setInventoryWest] = useState<Resource<InventorySnapshot>>(loading);
   const [plan, setPlan] = useState<Resource<AllocationPlanResponse>>({ state: "empty" });
+  const [census, setCensus] = useState<Resource<CensusResponse>>({ state: "empty" });
+  const [helpOutlook, setHelpOutlook] = useState<Resource<HelpDay>>({ state: "empty" });
   const [pdfBusy, setPdfBusy] = useState(false);
+
+  useEffect(() => {
+    if (focus) {
+      setMinPriority("high");
+    }
+  }, [focus?.townshipId, focus?.date]);
 
   const refreshInventory = async () => {
     setInventoryEast(loading);
@@ -84,6 +113,53 @@ export default function ResourceAllocationDashboard({
     void refreshInventory();
   }, []);
 
+  useEffect(() => {
+    let active = true;
+    const loadContext = async () => {
+      setCensus(loading);
+      try {
+        const payload = await api.census();
+        if (active) setCensus({ state: "ready", data: payload });
+      } catch (reason) {
+        if (active) setCensus({ state: "error", error: errorText(reason) });
+      }
+    };
+    void loadContext();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!focus) {
+      setHelpOutlook({ state: "empty" });
+      return;
+    }
+    let active = true;
+    const loadHelp = async () => {
+      setHelpOutlook(loading);
+      try {
+        const payload = await api.help({
+          township_id: focus.townshipId,
+          date: focus.date,
+          latitude: focus.latitude,
+          longitude: focus.longitude,
+        });
+        const day = helpDayForDate(payload.days, focus.date);
+        if (!day) {
+          throw new Error("Help outlook has no row for the selected planning date.");
+        }
+        if (active) setHelpOutlook({ state: "ready", data: day });
+      } catch (reason) {
+        if (active) setHelpOutlook({ state: "error", error: errorText(reason) });
+      }
+    };
+    void loadHelp();
+    return () => {
+      active = false;
+    };
+  }, [focus]);
+
   const submitPlan = async (event?: FormEvent) => {
     event?.preventDefault();
     setPlan(loading);
@@ -92,6 +168,7 @@ export default function ResourceAllocationDashboard({
         date: startDate,
         warehouse_region: "auto",
         min_priority: minPriority,
+        township_ids: focus ? [focus.townshipId] : undefined,
         vehicle_profile: "truck",
       });
       setPlan({ state: "ready", data: result });
@@ -100,6 +177,34 @@ export default function ResourceAllocationDashboard({
       setPlan({ state: "error", error: errorText(reason) });
     }
   };
+
+  useEffect(() => {
+    if (!focus) return;
+    if (inventoryEast.state !== "ready" || inventoryWest.state !== "ready") return;
+    let active = true;
+    const run = async () => {
+      setPlan(loading);
+      try {
+        const result = await api.allocationPlan({
+          date: startDate,
+          warehouse_region: "auto",
+          min_priority: "high",
+          township_ids: [focus.townshipId],
+          vehicle_profile: "truck",
+        });
+        if (active) {
+          setPlan({ state: "ready", data: result });
+          await refreshInventory();
+        }
+      } catch (reason) {
+        if (active) setPlan({ state: "error", error: errorText(reason) });
+      }
+    };
+    void run();
+    return () => {
+      active = false;
+    };
+  }, [focus, inventoryEast.state, inventoryWest.state, startDate]);
 
   const plannedByDepotItem = useMemo(() => {
     const totals = new Map<string, number>();
@@ -149,6 +254,23 @@ export default function ResourceAllocationDashboard({
   const affectedRows = plan.data?.rows ?? [];
   const affectedTotal = plan.data?.totals.affected_population;
 
+  const focusTownshipCensus = useMemo(
+    () => findTownshipCensus(census.data, focus?.townshipName ?? ""),
+    [census.data, focus?.townshipName],
+  );
+
+  const estimatedAffected = helpOutlook.data?.expected_affected_people ?? affectedRows[0]?.population ?? 0;
+  const sexSplit = useMemo(() => {
+    if (!focusTownshipCensus) {
+      return splitAffectedBySex(estimatedAffected, 0, 0);
+    }
+    return splitAffectedBySex(
+      estimatedAffected,
+      focusTownshipCensus.population.male,
+      focusTownshipCensus.population.female,
+    );
+  }, [estimatedAffected, focusTownshipCensus]);
+
   const savePdf = async () => {
     if (!plan.data) return;
     setPdfBusy(true);
@@ -188,31 +310,75 @@ export default function ResourceAllocationDashboard({
           <div className="section-heading">
             <div>
               <p className="eyebrow">Prediction</p>
-              <h2>Affected people</h2>
+              <h2>Affected population</h2>
             </div>
-            <strong className="allocation-total-pill">
-              {affectedTotal != null ? affectedTotal.toLocaleString() : "—"} total
-            </strong>
-          </div>
-          {plan.state === "loading" && <p className="state">Scoring townships from flood-help…</p>}
-          {plan.state === "error" && <p className="state error">Plan failed: {plan.error}</p>}
-          <ul className="allocation-people-list">
-            {affectedRows.length === 0 && plan.state === "ready" ? (
-              <li className="state">No townships met the priority threshold for this date.</li>
+            {focus ? (
+              <button type="button" className="text-link" onClick={onClearFocus}>
+                All townships
+              </button>
             ) : null}
-            {affectedRows.map((row) => (
-              <li key={row.township_id}>
+          </div>
+          {focus ? (
+            <div className="allocation-focus-card">
+              <p className="eyebrow">{focus.date}</p>
+              <h3>{focus.townshipName}</h3>
+              <p className="hint">
+                Focused from flood prediction ({focus.riskLevel} risk). Census 2024 sex ratio applied to the help
+                model estimate.
+              </p>
+              {helpOutlook.state === "loading" && <p className="state">Loading help outlook…</p>}
+              {helpOutlook.state === "error" && (
+                <p className="state error">Help outlook unavailable: {helpOutlook.error}</p>
+              )}
+              <div className="allocation-sex-grid" aria-label="Estimated affected population by sex">
                 <div>
-                  <strong>{row.township_name}</strong>
-                  <span>{depotLabel(row.depot_region)} depot</span>
+                  <span>Total affected</span>
+                  <strong>{sexSplit.total.toLocaleString()}</strong>
                 </div>
-                <div className="allocation-people-meta">
-                  <span>{row.population.toLocaleString()} people</span>
-                  <span className={`risk-pill risk-${row.priority}`}>{row.priority}</span>
+                <div>
+                  <span>Male</span>
+                  <strong>{sexSplit.male.toLocaleString()}</strong>
                 </div>
-              </li>
-            ))}
-          </ul>
+                <div>
+                  <span>Female</span>
+                  <strong>{sexSplit.female.toLocaleString()}</strong>
+                </div>
+              </div>
+              {focusTownshipCensus ? (
+                <p className="hint">
+                  Township census population: {focusTownshipCensus.population.total.toLocaleString()} (
+                  {focusTownshipCensus.population.male.toLocaleString()} male ·{" "}
+                  {focusTownshipCensus.population.female.toLocaleString()} female)
+                </p>
+              ) : null}
+            </div>
+          ) : (
+            <p className="hint">Open Resource Allocation from a high or severe prediction to focus one township.</p>
+          )}
+          {plan.state === "loading" && <p className="state">Building allocation plan…</p>}
+          {plan.state === "error" && <p className="state error">Plan failed: {plan.error}</p>}
+          {!focus ? (
+            <ul className="allocation-people-list">
+              {affectedRows.length === 0 && plan.state === "ready" ? (
+                <li className="state">No townships met the priority threshold for this date.</li>
+              ) : null}
+              {affectedRows.map((row) => (
+                <li key={row.township_id}>
+                  <div>
+                    <strong>{row.township_name}</strong>
+                    <span>{depotLabel(row.depot_region)} depot</span>
+                  </div>
+                  <div className="allocation-people-meta">
+                    <span>{row.population.toLocaleString()} people</span>
+                    <span className={`risk-pill risk-${row.priority}`}>{row.priority}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {focus && affectedTotal != null ? (
+            <p className="hint">Plan total for focused run: {affectedTotal.toLocaleString()} people.</p>
+          ) : null}
         </article>
 
         <article className="panel allocation-stock-panel">

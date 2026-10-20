@@ -1,190 +1,117 @@
-import asyncio
+import json
+from datetime import date
+from pathlib import Path
 
-import httpx
-import pytest
-from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-from sqlalchemy.pool import StaticPool
 
-from app.db import Base, get_db
-from app.main import app
-from app.services import admin_areas
+from app.db import Base
+from app.services import geography
+
+CROSSWALK = (
+    Path(__file__).resolve().parents[2]
+    / "data"
+    / "external"
+    / "geography"
+    / "bago_district_crosswalk_2022.json"
+)
 
 
-def _place(entity_id: str, name: str, parent_id: str, lat: float, lon: float) -> dict:
+def _feature(level: int, code: str, name: str, parents: dict[int, str]):
+    properties = {
+        "adm1_pcode": parents.get(1, code if level == 1 else "MMR007"),
+        "adm1_name": "Bago",
+        "valid_on": "2024-02-15",
+        "version": "v01",
+        "center_lat": 18 + level / 100,
+        "center_lon": 96 + level / 100,
+    }
+    for parent_level, parent_code in parents.items():
+        properties[f"adm{parent_level}_pcode"] = parent_code
+        properties[f"adm{parent_level}_name"] = f"Parent {parent_code}"
+    properties[f"adm{level}_pcode"] = code
+    properties[f"adm{level}_name"] = name
     return {
-        "id": entity_id,
-        "name_local": name,
-        "name_en": name,
-        "slug": f"{name.lower()}-{entity_id}",
-        "lat": lat,
-        "lon": lon,
-        "parent_id": parent_id,
+        "type": "Feature",
+        "properties": properties,
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [[[96, 18], [96.1, 18], [96.1, 18.1], [96, 18.1], [96, 18]]],
+        },
     }
 
 
-class FakeResponse:
-    def __init__(self, payload: dict):
-        self.payload = payload
-
-    def raise_for_status(self) -> None:
-        return None
-
-    def json(self) -> dict:
-        return self.payload
-
-
-class FakeClient:
-    def __init__(self, payloads: dict[str, dict]):
-        self.payloads = payloads
-        self.urls: list[str] = []
-
-    async def get(self, url: str) -> FakeResponse:
-        self.urls.append(url)
-        return FakeResponse(self.payloads[url])
-
-
-# Open Admin Data still files these under the old four districts.
-_OLD_API_TOWNSHIPS = {
-    "Bago": ["Bago", "Kawa", "Thanatpin", "Waw", "Nyaunglebin", "Kyauktaga", "Daik-U", "Shwegyin", "Hpayargyi"],
-    "Taungoo": ["Kyaukkyi", "Taungoo", "Phyu", "Yedashe", "Oktwin"],
-    "Pyay": ["Pyay", "Padaung", "Paukkhaung", "Paungde", "Paungdale", "Shwedaung", "Thegon"],
-    "Thayarwady": ["Gyobingauk", "Letpadan", "Minhla", "Monyo", "Nattalin", "Okpho", "Thayarwady", "Zigon"],
-}
-
-
-def _payloads() -> dict[str, dict]:
-    districts = {
-        "Taungoo": _place("MMR007D002", "Taungoo", "MMR007", 18.87, 96.41),
-        "Bago": _place("MMR007D001", "Bago", "MMR007", 17.67, 96.62),
-        "Pyay": _place("MMR008D001", "Pyay", "MMR007", 18.69, 95.32),
-        "Thayarwady": _place("MMR008D002", "Thayarwady", "MMR007", 18.04, 95.65),
-    }
-    region_children = [_place("MMR013D001", "Yangon", "MMR013", 16.8, 96.15), *districts.values()]
-    payloads = {
-        f"{admin_areas.API_ROOT}/region/bago-MMR007.json": {
-            "entity": {
-                "id": "MMR007",
-                "name_local": "Bago Region",
-                "name_en": "Bago",
-                "slug": "bago-MMR007",
-                "lat": 18.2638,
-                "lon": 96.0673,
-            },
-            "children": {"level": "district", "entities": region_children},
-        }
-    }
-    for district_name, township_names in _OLD_API_TOWNSHIPS.items():
-        district = districts[district_name]
-        townships = []
-        for name in township_names:
-            latitude = 17.33583 if name == "Bago" else 17.1
-            longitude = 96.48389 if name == "Bago" else 96.2
-            townships.append(_place(f"{district['id']}-{name}", name, district["id"], latitude, longitude))
-        payloads[f"{admin_areas.API_ROOT}/district/{district['slug']}.json"] = {
-            "entity": district,
-            "children": {"level": "township", "entities": townships},
-        }
-    return payloads
-
-
-@pytest.fixture()
-def client() -> TestClient:
-    engine = create_engine(
-        "sqlite://",
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
-    )
+def test_imported_bago_hierarchy_has_verified_counts_and_parents(tmp_path) -> None:
+    engine = create_engine("sqlite://")
     Base.metadata.create_all(engine)
-    session = Session(engine)
-    app.dependency_overrides[get_db] = lambda: session
-    with TestClient(app) as value:
-        yield value
-    app.dependency_overrides.clear()
-    session.close()
-    Base.metadata.drop_all(engine)
+    features = [_feature(1, "MMR007", "Bago", {})]
+    township_number = 0
+    for district_number in range(6):
+        district_code = f"MMR007D{district_number + 1:03d}"
+        features.append(_feature(2, district_code, f"District {district_number}", {1: "MMR007"}))
+        township_count = 5 if district_number < 4 else 4
+        for _ in range(township_count):
+            township_number += 1
+            features.append(
+                _feature(
+                    3,
+                    f"MMR007{township_number:03d}",
+                    f"Township {township_number}",
+                    {1: "MMR007", 2: district_code},
+                )
+            )
+    path = tmp_path / "bago.geojson"
+    path.write_text(json.dumps({"type": "FeatureCollection", "features": features}), encoding="utf-8")
+
+    counts = [5, 5, 5, 5, 4, 4]
+    districts = []
+    next_township = 1
+    for district_number, count in enumerate(counts):
+        districts.append(
+            {
+                "id": f"MMR007D{district_number + 1:03d}",
+                "name_en": f"District {district_number}",
+                "townships": [f"Township {n}" for n in range(next_township, next_township + count)],
+            }
+        )
+        next_township += count
+    crosswalk = tmp_path / "crosswalk.json"
+    crosswalk.write_text(
+        json.dumps({"region": {"id": "MMR-BAGO", "name_en": "Bago"}, "districts": districts}),
+        encoding="utf-8",
+    )
+    with Session(engine) as session:
+        counts = geography.import_ocha_geojson(session, [path], district_crosswalk=crosswalk)
+        assert counts["region"] == 1
+        assert counts["district"] == 6
+        assert counts["township"] == 28
+        payload = geography.bago_area_response(session)
+        assert payload["dataset_version"] == geography.OCHA_VERSION
+        assert len(payload["districts"]) == 6
+        assert sum(len(row["townships"]) for row in payload["districts"]) == 28
+        assert payload["districts"][0]["geometry"]["type"] in {"Polygon", "MultiPolygon"}
 
 
-def test_bago_loader_follows_2022_six_districts() -> None:
-    client = FakeClient(_payloads())
-    result = asyncio.run(admin_areas.load_bago_admin(client))
-    by_name = {item["name_en"]: item for item in result["districts"]}
-
-    assert result["region_id"] == "MMR007"
-    assert [item["name_en"] for item in result["districts"]] == [
-        "Bago",
-        "Nyaunglebin",
-        "Taungoo",
-        "Thayarwady",
-        "Nattalin",
-        "Pyay",
-    ]
-    assert [len(item["townships"]) for item in result["districts"]] == [4, 5, 5, 6, 4, 4]
-    assert [item["name_en"] for item in by_name["Nyaunglebin"]["townships"]] == [
-        "Nyaunglebin",
-        "Kyauktaga",
-        "Daik-U",
-        "Shwegyin",
-        "Kyaukkyi",
-    ]
-    assert [item["name_en"] for item in by_name["Nattalin"]["townships"]] == [
-        "Nattalin",
-        "Zigon",
-        "Thegon",
-        "Paungde",
-    ]
-    assert by_name["Nyaunglebin"]["id"] == "nyaunglebin"
-    assert by_name["Nattalin"]["id"] == "nattalin"
-    assert by_name["Bago"]["townships"][0]["latitude"] == 17.33583
-    assert by_name["Taungoo"]["townships"][-1]["id"] == "htantabin-taungoo"
-    names = [township["name_en"] for district in result["districts"] for township in district["townships"]]
-    assert "Hpayargyi" not in names
-    assert "Paungdale" not in names
-    assert not any("yangon" in url for url in client.urls)
-
-
-def test_bago_areas_route(client: TestClient, monkeypatch) -> None:
-    async def fake_areas() -> dict:
-        return {
-            "region_name_local": "Bago Region",
-            "latitude": 18.2638,
-            "longitude": 96.0673,
-            "districts": [
-                {
-                    "id": "MMR007D001",
-                    "slug": "bago-MMR007D001",
-                    "name_en": "Bago",
-                    "name_local": "Bago District",
-                    "latitude": 17.67,
-                    "longitude": 96.62,
-                    "townships": [
-                        {
-                            "id": "MMR007001701",
-                            "slug": "bago-MMR007001701",
-                            "name_en": "Bago",
-                            "name_local": "Bago",
-                            "latitude": 17.33583,
-                            "longitude": 96.48389,
-                        }
-                    ],
-                }
-            ],
-        }
-
-    monkeypatch.setattr(admin_areas, "bago_areas", fake_areas)
-    response = client.get("/bago-areas")
-    assert response.status_code == 200
-    body = response.json()
-    assert body["source"] == "Open Admin Data"
-    assert body["region_id"] == "MMR007"
-    assert body["districts"][0]["townships"][0]["name_en"] == "Bago"
-
-
-def test_bago_areas_provider_failure(client: TestClient, monkeypatch) -> None:
-    async def broken() -> dict:
-        raise httpx.ConnectError("down")
-
-    monkeypatch.setattr(admin_areas, "bago_areas", broken)
-    response = client.get("/bago-areas")
-    assert response.status_code == 502
+def test_import_rejects_incomplete_district_coverage(tmp_path) -> None:
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    path = tmp_path / "incomplete.geojson"
+    path.write_text(
+        json.dumps(
+            {
+                "type": "FeatureCollection",
+                "features": [
+                    _feature(1, "MMR007", "Bago", {}),
+                    _feature(2, "MMR007D001", "Only district", {1: "MMR007"}),
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with Session(engine) as session:
+        try:
+            geography.import_ocha_geojson(session, [path], district_crosswalk=CROSSWALK)
+        except ValueError as exc:
+            assert "six Bago districts" in str(exc) or "crosswalk" in str(exc).lower()
+        else:
+            raise AssertionError("incomplete geography must fail validation")

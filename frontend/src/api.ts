@@ -34,6 +34,8 @@ import type {
 
 const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "/api";
 
+import { formatApiDetail } from "./lib/formatError";
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -57,8 +59,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     let detail = `${response.status} ${response.statusText}`.trim();
     try {
-      const body = (await response.json()) as { detail?: string };
-      detail = body.detail ?? detail;
+      const body = (await response.json()) as { detail?: unknown };
+      if (body.detail !== undefined) {
+        detail = formatApiDetail(body.detail);
+      }
     } catch {
       // Keep the HTTP status when the server does not return JSON.
     }
@@ -97,7 +101,15 @@ export const api = {
     request<PredictionTimelineResponse>("/prediction/timeline", {
       method: "POST",
       body: JSON.stringify(input),
+      signal: AbortSignal.timeout(180_000),
     }),
+  predictionCalendarBounds: () =>
+    request<{
+      history_start: string;
+      history_end: string;
+      forecast_end: string;
+      select_max: string;
+    }>("/prediction/calendar-bounds"),
   predictionMapScores: (date: string, districtId?: string) => {
     const params = new URLSearchParams({ date });
     if (districtId) params.set("district_id", districtId);

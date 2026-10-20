@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_inventory_db
 from app.services.inventory import InventoryError, add_region_stock, region_snapshot
-from app.services.object_detect import ObjectDetectError, detect_image
+from app.services.object_detect import ObjectDetectError, detect_image, detect_video
 
 router = APIRouter(tags=["inventory"])
 
@@ -28,6 +28,20 @@ async def detect_inventory_item(
         raise HTTPException(status_code=422, detail="Choose a photo.")
     try:
         return detect_image(payload, category_code)
+    except ObjectDetectError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+
+@router.post("/inventory/detect/video")
+async def detect_inventory_video(
+    category_code: str = Form(...),
+    video: UploadFile = File(...),
+) -> dict:
+    payload = await video.read()
+    if not payload:
+        raise HTTPException(status_code=422, detail="Choose a video.")
+    try:
+        return detect_video(payload, category_code)
     except ObjectDetectError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api";
-import { addDays, filterDaysByMode, localToday, type TimeMode } from "../lib/dates";
+import { addDays, DEFAULT_HISTORY_START, filterDaysByMode, forecastEnd, localToday, type TimeMode } from "../lib/dates";
 import type {
   BagoAreasResponse,
   LoadState,
@@ -27,12 +27,34 @@ export function usePredictionTimeline(
   selectedTownship: string,
   districtFilter: string,
 ) {
-  const asOf = localToday();
+  const today = localToday();
+  const [anchorDate, setAnchorDateState] = useState(today);
+  const [dateMin, setDateMin] = useState(DEFAULT_HISTORY_START);
+  const [dateMax, setDateMax] = useState(forecastEnd(today));
   const [timeMode, setTimeMode] = useState<TimeMode>("today");
-  const [selectedDate, setSelectedDate] = useState(asOf);
+  const [selectedDate, setSelectedDate] = useState(today);
   const dateTouched = useRef(false);
   const [timeline, setTimeline] = useState<Resource<PredictionTimelineResponse>>(loading);
   const [mapScores, setMapScores] = useState<Resource<PredictionMapScoresResponse>>(loading);
+
+  useEffect(() => {
+    let active = true;
+    api
+      .predictionCalendarBounds()
+      .then((bounds) => {
+        if (!active) return;
+        setDateMin(bounds.history_start);
+        setDateMax(bounds.select_max);
+      })
+      .catch(() => {
+        if (!active) return;
+        setDateMin(DEFAULT_HISTORY_START);
+        setDateMax(forecastEnd(today));
+      });
+    return () => {
+      active = false;
+    };
+  }, [today]);
 
   const selectedPlace = useMemo(() => {
     for (const district of areas?.districts ?? []) {
@@ -49,8 +71,8 @@ export function usePredictionTimeline(
     setTimeline(loading);
     api
       .predictionTimeline({
-        date: asOf,
-        as_of: asOf,
+        date: anchorDate,
+        as_of: anchorDate,
         township_id: township.id,
         latitude: township.latitude,
         longitude: township.longitude,
@@ -64,16 +86,20 @@ export function usePredictionTimeline(
     return () => {
       active = false;
     };
-  }, [selectedPlace, asOf]);
+  }, [selectedPlace, anchorDate]);
 
   useEffect(() => {
-    if (!dateTouched.current) setSelectedDate(asOf);
-  }, [asOf]);
+    if (!dateTouched.current) {
+      setSelectedDate(anchorDate);
+    }
+  }, [anchorDate]);
 
   useEffect(() => {
-    const current = timeline.data?.days.find((day) => day.period_type === "current")?.date ?? timeline.data?.as_of;
-    if (current && current === asOf && !dateTouched.current) setSelectedDate(current);
-  }, [timeline.data, asOf]);
+    const current = timeline.data?.as_of;
+    if (current && current === anchorDate && !dateTouched.current) {
+      setSelectedDate(current);
+    }
+  }, [timeline.data, anchorDate]);
 
   useEffect(() => {
     let active = true;
@@ -97,7 +123,7 @@ export function usePredictionTimeline(
     };
   }, [selectedDate, districtFilter]);
 
-  const modeRange = useMemo(() => filterDaysByMode(asOf, timeMode), [asOf, timeMode]);
+  const modeRange = useMemo(() => filterDaysByMode(anchorDate, timeMode), [anchorDate, timeMode]);
 
   const modeDays = useMemo(() => {
     const days = timeline.data?.days ?? [];
@@ -124,19 +150,31 @@ export function usePredictionTimeline(
     setSelectedDate(date);
   }, []);
 
+  const setAnchorDate = useCallback(
+    (value: string) => {
+      if (value < dateMin || value > dateMax) return;
+      dateTouched.current = false;
+      setAnchorDateState(value);
+      setSelectedDate(value);
+      setTimeMode("today");
+    },
+    [dateMin, dateMax],
+  );
+
   const setTimeModeAndDate = useCallback(
     (mode: TimeMode) => {
       setTimeMode(mode);
-      const range = filterDaysByMode(asOf, mode);
+      const range = filterDaysByMode(anchorDate, mode);
       if (mode === "today") {
-        setSelectedDate(asOf);
+        setSelectedDate(anchorDate);
       } else if (mode === "past") {
         setSelectedDate(range.end);
       } else {
         setSelectedDate(range.start);
       }
+      dateTouched.current = true;
     },
-    [asOf],
+    [anchorDate],
   );
 
   const stepSelectedDate = useCallback(
@@ -146,12 +184,17 @@ export function usePredictionTimeline(
       const index = ordered.indexOf(selectedDate);
       const nextIndex = index === -1 ? 0 : Math.min(Math.max(index + direction, 0), ordered.length - 1);
       setSelectedDate(ordered[nextIndex]);
+      dateTouched.current = true;
     },
     [modeDays, selectedDate],
   );
 
   return {
-    asOf,
+    today,
+    anchorDate,
+    setAnchorDate,
+    dateMin,
+    dateMax,
     timeMode,
     setTimeMode: setTimeModeAndDate,
     selectedDate,

@@ -11,7 +11,7 @@ def test_census_reference_matches_bago_workbook_totals() -> None:
 
     assert census.population.total.total == 4_453_687
     assert census.population.total.male + census.population.total.female == 4_453_687
-    assert census.population.urban.total + census.population.rural.total == 4_453_687
+    assert census.population.urban.total.total + census.population.rural.total.total == 4_453_687
     assert census.households.total == 1_029_962
     assert census.households.urban_dwellings.total + census.households.rural_dwellings.total == 1_029_962
     assert len(census.districts) == 6
@@ -20,9 +20,8 @@ def test_census_reference_matches_bago_workbook_totals() -> None:
     assert census.age_groups[0].label == "0-4"
     assert census.age_groups[-1].label == "90+"
 
-    profile = township_profile("Bago")
-    assert profile is not None
-    district, township = profile
+    district, township = township_profile("Bago")
+    assert district is not None and township is not None
     assert district.name_en == "Bago"
     assert township.population.total == 484_994
     assert township.households.total == 111_465

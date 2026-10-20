@@ -9,6 +9,7 @@ from app.api.hydrology import router as hydrology_router
 from app.api.inventory import router as inventory_router
 from app.api.operations import router as operations_router
 from app.api.prediction import router as prediction_router
+from app.api.simulation import router as simulation_router
 from app.db import create_tables
 
 
@@ -35,4 +36,5 @@ app.include_router(hydrology_router)
 app.include_router(operations_router)
 app.include_router(prediction_router)
 app.include_router(allocation_router)
+app.include_router(simulation_router)
 app.include_router(inventory_router)

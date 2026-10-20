@@ -23,7 +23,13 @@ export default function SummaryCards({ day, asOf }: SummaryCardsProps) {
       <article className="summary-card summary-primary">
         <span>Flood probability</span>
         <strong>{formatPercent(day?.flood_probability)}</strong>
-        <small>{day?.evidence_type === "model_prediction" ? "Uncalibrated model score" : "No model score"}</small>
+        <small>
+          {day?.evidence_type === "model_prediction"
+            ? "Uncalibrated model score"
+            : day?.data_status === "insufficient_features"
+              ? "Missing rainfall or discharge for this day — run hydro download or pick another date"
+              : "No model score"}
+        </small>
       </article>
       <article className="summary-card summary-primary">
         <span>Flood risk level</span>

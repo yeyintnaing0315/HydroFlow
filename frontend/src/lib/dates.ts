@@ -35,6 +35,12 @@ export function daysInRange(start: string, end: string): string[] {
   return out;
 }
 
+export const DEFAULT_HISTORY_START = "1984-01-01";
+
+export function forecastEnd(asOf: string = localToday(), horizonDays = 7): string {
+  return addDays(asOf, horizonDays);
+}
+
 export function filterDaysByMode(asOf: string, mode: TimeMode): { start: string; end: string } {
   if (mode === "past") {
     return { start: addDays(asOf, -7), end: addDays(asOf, -1) };
