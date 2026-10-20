@@ -201,7 +201,7 @@ button.text-link, .text-link {
 .history-row.region { grid-template-columns: 1.1fr .9fr .8fr .7fr; width: 100%; border-radius: 10px; }
 .history-row.selectable { cursor: pointer; }
 .history-row.selectable:hover, .history-row.selected { background: #f3f8ff; }
-.history-row.allocation { grid-template-columns: 1.1fr .8fr .7fr 1.3fr 1.1fr .7fr; align-items: center; min-width: 720px; }
+.history-row.allocation { grid-template-columns: 1.1fr .8fr .7fr .7fr 1.3fr 1.1fr .7fr; align-items: center; min-width: 820px; }
 
 .stat-card, .summary-card {
   display: flex; align-items: center; gap: .85rem; min-height: 96px; padding: 1rem 1.05rem; background: #fff;
@@ -398,8 +398,29 @@ button.text-link, .text-link {
 .trend-chart-wrap { overflow-x: auto; }
 
 .allocation-board {
-  display: grid; grid-template-columns: minmax(280px, .85fr) minmax(0, 1.15fr); gap: 1rem; align-items: start;
+  display: grid;
+  grid-template-columns: minmax(300px, .9fr) minmax(0, 1.1fr);
+  grid-template-rows: auto auto;
+  gap: 1rem;
+  align-items: start;
 }
+.allocation-route-panel { grid-row: span 2; min-height: 520px; }
+.allocation-side { display: grid; gap: 1rem; align-content: start; }
+.allocation-plan-sheet { grid-column: 1 / -1; }
+.allocation-people-list { margin: 0; padding: 0; list-style: none; display: grid; gap: .55rem; max-height: 220px; overflow: auto; }
+.allocation-people-list li {
+  display: flex; justify-content: space-between; gap: .8rem; align-items: center;
+  padding: .55rem .65rem; background: #f6f9fd; border-radius: 12px; font-size: .84rem;
+}
+.allocation-people-list li span { display: block; color: var(--muted); font-size: .72rem; }
+.allocation-people-meta { display: flex; flex-direction: column; align-items: flex-end; gap: .25rem; }
+.allocation-total-pill { font-size: .95rem; color: var(--blue); }
+.allocation-stock-grid { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; margin-bottom: .8rem; max-height: 200px; overflow: auto; }
+.allocation-stock-depot h3 { margin: 0 0 .4rem; font-size: .78rem; text-transform: uppercase; color: var(--muted); }
+.allocation-stock-depot ul { margin: 0; padding: 0; list-style: none; display: grid; gap: .35rem; font-size: .78rem; }
+.allocation-stock-depot li { display: flex; justify-content: space-between; gap: .5rem; }
+.allocation-controls-compact { grid-template-columns: 1fr 1fr auto; align-items: end; }
+.allocation-map-frame { min-height: 420px; }
 .allocation-main { display: grid; gap: 1rem; }
 .allocation-stat { display: flex; align-items: center; gap: .75rem; padding: .9rem 1rem; background: #fff; border: 1px solid var(--line); border-radius: 16px; }
 .allocation-stat .stat-icon { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 12px; background: var(--blue-soft); }
@@ -514,7 +535,8 @@ button.text-link, .text-link {
 .report-districts span { display: block; color: var(--muted); font-size: .78rem; }
 
 @media print {
-  .sidebar, .topbar, .allocation-actions { display: none !important; }
+  .sidebar, .topbar, .allocation-actions, .allocation-route-panel, .allocation-side { display: none !important; }
+  .allocation-plan-sheet { display: block !important; }
   .shell { grid-template-columns: 1fr; }
 }
 

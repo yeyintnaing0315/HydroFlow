@@ -25,11 +25,14 @@ vi.mock("./api", () => ({
     runs: vi.fn().mockResolvedValue([]),
     inundationProducts: vi.fn().mockResolvedValue([]),
     settlements: vi.fn().mockResolvedValue([]),
-    inventory: vi.fn().mockResolvedValue({ region: "east", location: "Bago East", classes: [], movements: [] }),
     allocationPlan: vi.fn().mockResolvedValue({
       plan_id: "p1",
       planning_date: "2026-10-19",
-      warehouse: { id: "east", name: "Bago East", region: "east", latitude: 17.336, longitude: 96.481 },
+      warehouse: { id: "depot-bago", name: "Bago depot (east)", region: "east", latitude: 17.335, longitude: 96.481 },
+      warehouses: [
+        { id: "depot-bago", name: "Bago depot (east)", region: "east", latitude: 17.335, longitude: 96.481 },
+        { id: "depot-pyay", name: "Pyay depot (west)", region: "west", latitude: 18.817, longitude: 95.217 },
+      ],
       totals: { affected_population: 8500, available_stock_units: 1200, resources_needed_units: 900 },
       rows: [],
       shortages: [],
@@ -37,6 +40,12 @@ vi.mock("./api", () => ({
       model_version: "flood-help-v2",
       disclaimer: "Academic planning aid.",
     }),
+    inventory: vi.fn().mockImplementation(async (region: string) => ({
+      region,
+      location: region === "east" ? "Bago East" : "Bago West",
+      classes: [],
+      movements: [],
+    })),
     predictionTimeline: vi.fn().mockResolvedValue({
       township_id: "MMR007001701",
       as_of: "2026-10-19",
@@ -425,8 +434,9 @@ describe("dashboard", () => {
     expect(screen.getByRole("button", { name: "+ Add Item" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Resource Allocation" }));
-    expect(await screen.findByRole("heading", { name: "Resource allocation list" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Generate allocation plan" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Check inventory" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Route map" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Affected people" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Allocation plan" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Create plan" })).toBeInTheDocument();
   }, 30000);
 });

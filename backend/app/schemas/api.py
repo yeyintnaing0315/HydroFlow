@@ -545,7 +545,7 @@ AssistancePriorityLevel = Literal["none", "low", "moderate", "high", "severe"]
 
 class AllocationPlanRequest(BaseModel):
     date: date
-    warehouse_region: Literal["east", "west"] = "east"
+    warehouse_region: Literal["east", "west", "auto"] = "auto"
     min_priority: AssistancePriorityLevel = "moderate"
     township_ids: list[str] | None = Field(default=None, max_length=40)
     vehicle_profile: Literal["car", "truck", "fly"] = "truck"
@@ -571,6 +571,7 @@ class AllocationTownshipRow(BaseModel):
     quantities_label: str
     line_items: list[AllocationLineItem]
     route_id: str
+    depot_region: Literal["east", "west"] = "east"
     has_shortage: bool = False
 
 
@@ -582,6 +583,7 @@ class AllocationShortage(BaseModel):
     requested: float = Field(ge=0)
     available: float = Field(ge=0)
     unmet: float = Field(ge=0)
+    depot_region: Literal["east", "west"] = "east"
 
 
 class AllocationWarehouse(BaseModel):
@@ -596,6 +598,7 @@ class AllocationRouteSummary(BaseModel):
     route_id: str
     stop_count: int = Field(ge=0)
     path: list[Coordinates]
+    depot_region: Literal["east", "west"] = "east"
     plan: RoutePlanResponse | None = None
 
 
@@ -609,6 +612,7 @@ class AllocationPlanResponse(BaseModel):
     plan_id: str
     planning_date: date
     warehouse: AllocationWarehouse
+    warehouses: list[AllocationWarehouse] = Field(default_factory=list)
     totals: AllocationTotals
     rows: list[AllocationTownshipRow]
     shortages: list[AllocationShortage]

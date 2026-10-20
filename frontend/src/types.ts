@@ -439,7 +439,7 @@ export interface HelpBriefResponse {
 
 export interface AllocationPlanRequest {
   date: string;
-  warehouse_region: "east" | "west";
+  warehouse_region?: "east" | "west" | "auto";
   min_priority?: AssistancePriority;
   township_ids?: string[];
   vehicle_profile?: "car" | "truck" | "fly";
@@ -465,6 +465,7 @@ export interface AllocationTownshipRow {
   quantities_label: string;
   line_items: AllocationLineItem[];
   route_id: string;
+  depot_region: "east" | "west";
   has_shortage: boolean;
 }
 
@@ -476,6 +477,7 @@ export interface AllocationShortage {
   requested: number;
   available: number;
   unmet: number;
+  depot_region: "east" | "west";
 }
 
 export interface AllocationWarehouse {
@@ -490,6 +492,7 @@ export interface AllocationRouteSummary {
   route_id: string;
   stop_count: number;
   path: Coordinates[];
+  depot_region: "east" | "west";
   plan: RoutePlanResponse | null;
 }
 
@@ -497,6 +500,7 @@ export interface AllocationPlanResponse {
   plan_id: string;
   planning_date: string;
   warehouse: AllocationWarehouse;
+  warehouses: AllocationWarehouse[];
   totals: {
     affected_population: number;
     available_stock_units: number;

@@ -20,13 +20,10 @@ from app.schemas.api import (
     AllocationTownshipRow,
     AllocationWarehouse,
     AssistancePriorityLevel,
-    RoutePlanRequest,
-    RouteStop,
 )
-from app.services import admin_areas, help_prediction, kardinal, live_features
+from app.services import admin_areas, help_prediction, live_features, osrm
 from app.services.geography import GeographyUnavailableError
 from app.services.inventory import region_snapshot
-from app.services.kardinal import KardinalConfigError, KardinalRequestError
 from app.services.prediction import ModelUnavailableError
 
 PRIORITY_WEIGHT: dict[str, int] = {
@@ -41,18 +38,18 @@ ROUTE_LABELS = ("Route A", "Route B", "Route C")
 
 WAREHOUSES: dict[str, AllocationWarehouse] = {
     "east": AllocationWarehouse(
-        id="warehouse-east",
-        name="Bago East Warehouse",
+        id="depot-bago",
+        name="Bago depot (east)",
         region="east",
-        latitude=17.344,
-        longitude=96.518,
+        latitude=17.335,
+        longitude=96.481,
     ),
     "west": AllocationWarehouse(
-        id="warehouse-west",
-        name="Bago West Warehouse",
+        id="depot-pyay",
+        name="Pyay depot (west)",
         region="west",
-        latitude=17.322,
-        longitude=96.452,
+        latitude=18.817,
+        longitude=95.217,
     ),
 }
 
@@ -182,6 +179,14 @@ async def _help_for_township(
     return scored
 
 
+def _nearest_depot(latitude: float, longitude: float) -> Literal["east", "west"]:
+    east = WAREHOUSES["east"]
+    west = WAREHOUSES["west"]
+    east_dist = (latitude - east.latitude) ** 2 + (longitude - east.longitude) ** 2
+    west_dist = (latitude - west.latitude) ** 2 + (longitude - west.longitude) ** 2
+    return "east" if east_dist <= west_dist else "west"
+
+
 def _iter_townships(session: Session, township_ids: list[str] | None) -> list[TownshipCatalog]:
     try:
         payload = admin_areas.bago_areas(session)
@@ -231,102 +236,36 @@ async def _route_for_group(
     warehouse: AllocationWarehouse,
     route_id: str,
     stops: list[AllocationTownshipRow],
-    vehicle_profile: Literal["car", "truck", "fly"],
+    depot_region: Literal["east", "west"],
 ) -> AllocationRouteSummary:
     if not stops:
-        return AllocationRouteSummary(route_id=route_id, stop_count=0, path=[])
-    origin = RouteStop(
-        id=warehouse.id,
-        name=warehouse.name,
-        latitude=warehouse.latitude,
-        longitude=warehouse.longitude,
-    )
-    stop_models = [
-        RouteStop(
-            id=row.township_id,
-            name=row.township_name,
-            latitude=row.latitude,
-            longitude=row.longitude,
-        )
-        for row in stops
-    ]
-    request = RoutePlanRequest(
-        origin=origin,
-        stops=stop_models,
-        vehicle_profile=vehicle_profile,
-        service_minutes=15,
-        return_to_origin=True,
-    )
-    try:
-        plan = await kardinal.plan_route(request)
-        path = [{"latitude": point.latitude, "longitude": point.longitude} for point in plan.path]
         return AllocationRouteSummary(
-            route_id=route_id,
-            stop_count=len(stops),
-            path=path,
-            plan=plan,
+            route_id=route_id, stop_count=0, path=[], depot_region=depot_region, plan=None
         )
-    except (KardinalConfigError, KardinalRequestError, httpx.HTTPError):
-        return AllocationRouteSummary(
-            route_id=route_id,
-            stop_count=len(stops),
-            path=_fallback_path(warehouse, stops),
-            plan=None,
-        )
-
-
-async def build_allocation_plan(
-    geo_session: Session,
-    inventory_session: Session,
-    request: AllocationPlanRequest,
-) -> AllocationPlanResponse:
-    try:
-        help_prediction.load_help_model()
-    except ModelUnavailableError as exc:
-        raise ModelUnavailableError(str(exc)) from exc
-
-    warehouse = WAREHOUSES[request.warehouse_region]
-    snapshot = region_snapshot(inventory_session, request.warehouse_region)
-    stock = _available_stock(snapshot)
-    remaining = {key: value[0] for key, value in stock.items()}
-
-    catalog = _iter_townships(geo_session, request.township_ids)
-    candidates: list[tuple[TownshipCatalog, dict[str, Any], list[AllocationLineItem]]] = []
-    for township in catalog:
-        scored = await _help_for_township(township, request.date)
-        if scored is None:
-            continue
-        priority = str(scored["assistance_priority"])
-        people = int(scored["expected_affected_people"])
-        if not _meets_min_priority(priority, request.min_priority):
-            continue
-        if people <= 0 and not bool(scored.get("predicted_help")):
-            continue
-        items = _line_items_from_help(scored)
-        if not items:
-            continue
-        candidates.append((township, scored, items))
-
-    candidates.sort(
-        key=lambda row: (
-            -PRIORITY_WEIGHT.get(str(row[1]["assistance_priority"]), 0),
-            -int(row[1]["expected_affected_people"]),
-        )
+    waypoints = [(warehouse.latitude, warehouse.longitude)]
+    waypoints.extend((row.latitude, row.longitude) for row in stops)
+    waypoints.append((warehouse.latitude, warehouse.longitude))
+    path = await osrm.driving_path(waypoints)
+    if path is None:
+        path = _fallback_path(warehouse, stops)
+    return AllocationRouteSummary(
+        route_id=route_id,
+        stop_count=len(stops),
+        path=path,
+        depot_region=depot_region,
+        plan=None,
     )
 
-    requested_totals: dict[tuple[str, str | None], float] = {}
-    for _township, _scored, items in candidates:
-        for item in items:
-            key = _stock_key(item.category_code, item.item_code)
-            requested_totals[key] = requested_totals.get(key, 0.0) + item.requested
 
-    allocated_rows: list[AllocationTownshipRow] = []
-    affected = 0
+def _allocate_from_stock(
+    candidates: list[tuple[TownshipCatalog, dict[str, Any], list[AllocationLineItem], Literal["east", "west"]]],
+    stock: dict[tuple[str, str | None], tuple[float, str, str]],
+    remaining: dict[tuple[str, str | None], float],
+) -> tuple[list[AllocationTownshipRow], float, dict[tuple[str, str | None], float]]:
+    rows: list[AllocationTownshipRow] = []
     needed_units = 0.0
-
-    for township, scored, items in candidates:
+    for township, scored, items, depot_region in candidates:
         people = int(scored["expected_affected_people"])
-        affected += people
         priority = str(scored["assistance_priority"])
         row_has_shortage = False
         for item in items:
@@ -339,7 +278,7 @@ async def build_allocation_plan(
             if take < item.requested:
                 row_has_shortage = True
         resources_label, quantities_label = _labels_from_items(items)
-        allocated_rows.append(
+        rows.append(
             AllocationTownshipRow(
                 township_id=township.id,
                 township_name=township.name_en,
@@ -351,25 +290,21 @@ async def build_allocation_plan(
                 quantities_label=quantities_label,
                 line_items=items,
                 route_id="",
+                depot_region=depot_region,
                 has_shortage=row_has_shortage,
             )
         )
+    return rows, needed_units, remaining
 
-    route_groups = _partition_routes(allocated_rows)
-    route_map = {row.township_id: label for label, group in route_groups for row in group}
-    for row in allocated_rows:
-        row.route_id = route_map.get(row.township_id, "Route A")
 
-    routes: list[AllocationRouteSummary] = []
-    for label, group in route_groups:
-        routes.append(
-            await _route_for_group(warehouse, label, group, request.vehicle_profile)
-        )
-
+def _shortages_for_depot(
+    requested_totals: dict[tuple[str, str | None], float],
+    stock: dict[tuple[str, str | None], tuple[float, str, str]],
+    depot_region: Literal["east", "west"],
+) -> list[AllocationShortage]:
     shortages: list[AllocationShortage] = []
     for key, requested in sorted(requested_totals.items()):
         available = stock.get(key, (0.0, key[0], "piece"))[0]
-        allocated = requested - max(0.0, requested - available)
         unmet = max(0.0, requested - available)
         if unmet <= 0:
             continue
@@ -383,20 +318,133 @@ async def build_allocation_plan(
                 requested=requested,
                 available=available,
                 unmet=unmet,
+                depot_region=depot_region,
             )
         )
+    return shortages
+
+
+async def build_allocation_plan(
+    geo_session: Session,
+    inventory_session: Session,
+    request: AllocationPlanRequest,
+) -> AllocationPlanResponse:
+    try:
+        help_prediction.load_help_model()
+    except ModelUnavailableError as exc:
+        raise ModelUnavailableError(str(exc)) from exc
+
+    auto_depots = request.warehouse_region == "auto"
+    depot_regions: tuple[Literal["east", "west"], ...]
+    if auto_depots:
+        depot_regions = ("east", "west")
+    else:
+        depot_regions = (request.warehouse_region,)
+
+    stock_by_region: dict[str, dict[tuple[str, str | None], tuple[float, str, str]]] = {}
+    remaining_by_region: dict[str, dict[tuple[str, str | None], float]] = {}
+    for region in depot_regions:
+        snapshot = region_snapshot(inventory_session, region)
+        stock_by_region[region] = _available_stock(snapshot)
+        remaining_by_region[region] = {key: value[0] for key, value in stock_by_region[region].items()}
+
+    catalog = _iter_townships(geo_session, request.township_ids)
+    scored_candidates: list[tuple[TownshipCatalog, dict[str, Any], list[AllocationLineItem]]] = []
+    for township in catalog:
+        scored = await _help_for_township(township, request.date)
+        if scored is None:
+            continue
+        priority = str(scored["assistance_priority"])
+        people = int(scored["expected_affected_people"])
+        if not _meets_min_priority(priority, request.min_priority):
+            continue
+        if people <= 0 and not bool(scored.get("predicted_help")):
+            continue
+        items = _line_items_from_help(scored)
+        if not items:
+            continue
+        scored_candidates.append((township, scored, items))
+
+    scored_candidates.sort(
+        key=lambda row: (
+            -PRIORITY_WEIGHT.get(str(row[1]["assistance_priority"]), 0),
+            -int(row[1]["expected_affected_people"]),
+        )
+    )
+
+    by_depot: dict[str, list[tuple[TownshipCatalog, dict[str, Any], list[AllocationLineItem], Literal["east", "west"]]]] = {
+        "east": [],
+        "west": [],
+    }
+    for township, scored, items in scored_candidates:
+        if auto_depots:
+            depot = _nearest_depot(township.latitude, township.longitude)
+        else:
+            depot = request.warehouse_region  # type: ignore[assignment]
+        by_depot[depot].append((township, scored, items, depot))
+
+    allocated_rows: list[AllocationTownshipRow] = []
+    affected = 0
+    needed_units = 0.0
+    shortages: list[AllocationShortage] = []
+
+    for region in depot_regions:
+        depot_candidates = by_depot[region]
+        requested_totals: dict[tuple[str, str | None], float] = {}
+        for _township, _scored, items, _depot in depot_candidates:
+            for item in items:
+                key = _stock_key(item.category_code, item.item_code)
+                requested_totals[key] = requested_totals.get(key, 0.0) + item.requested
+
+        rows, region_needed, remaining_by_region[region] = _allocate_from_stock(
+            depot_candidates,
+            stock_by_region[region],
+            remaining_by_region[region],
+        )
+        for _township, scored, _items, _depot in depot_candidates:
+            affected += int(scored["expected_affected_people"])
+        needed_units += region_needed
+        allocated_rows.extend(rows)
+        shortages.extend(
+            _shortages_for_depot(requested_totals, stock_by_region[region], region)
+        )
+
+    allocated_rows.sort(
+        key=lambda row: (
+            -PRIORITY_WEIGHT.get(str(row.priority), 0),
+            -row.population,
+        )
+    )
+
+    routes: list[AllocationRouteSummary] = []
+    for region in depot_regions:
+        warehouse = WAREHOUSES[region]
+        region_rows = [row for row in allocated_rows if row.depot_region == region]
+        route_groups = _partition_routes(region_rows)
+        route_map = {row.township_id: label for label, group in route_groups for row in group}
+        for row in region_rows:
+            row.route_id = route_map.get(row.township_id, f"{region.title()} Route A")
+        for label, group in route_groups:
+            routes.append(await _route_for_group(warehouse, label, group, region))
+
+    available_stock = sum(
+        _total_stock_units(stock_by_region[region]) for region in depot_regions
+    )
+    warehouse = WAREHOUSES["east"] if auto_depots else WAREHOUSES[request.warehouse_region]
+    warehouses = [WAREHOUSES[region] for region in depot_regions]
 
     model_version = "flood-help-v2"
-    if candidates:
-        model_version = str(candidates[0][1].get("model_version", model_version))
+    if scored_candidates:
+        model_version = str(scored_candidates[0][1].get("model_version", model_version))
 
     return AllocationPlanResponse(
         plan_id=str(uuid.uuid4()),
         planning_date=request.date,
         warehouse=warehouse,
+        warehouses=warehouses,
         totals=AllocationTotals(
             affected_population=affected,
-            available_stock_units=_total_stock_units(stock),
+            available_stock_units=available_stock,
             resources_needed_units=needed_units,
         ),
         rows=allocated_rows,
