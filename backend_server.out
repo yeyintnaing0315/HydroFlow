@@ -1,0 +1,81 @@
+INFO:     127.0.0.1:4292 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:4292 - "GET /assets/index-DG7Utk8Z.js HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:45064 - "GET /assets/index-ly96k45H.css HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:45064 - "GET /api/health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:4292 - "GET /api/bago-areas HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:3648 - "GET /api/settlements?limit=5000 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:3648 - "GET /api/inundation-products HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:4292 - "GET /api/runs HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:4292 - "GET /api/prediction/calendar-bounds HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:4292 - "GET /api/prediction/map-scores?date=2026-10-21 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:19167 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:19168 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40165 - "GET /townships HTTP/1.1" 200 OK
+INFO:     127.0.0.1:40166 - "GET /bago-areas HTTP/1.1" 200 OK
+INFO:     127.0.0.1:22424 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:22424 - "GET /api/health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:42761 - "GET /api/bago-areas HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:32127 - "GET /api/settlements?limit=5000 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:37863 - "GET /api/runs HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:19665 - "GET /api/inundation-products HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:24030 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:24030 - "GET /api/health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:28340 - "GET /api/bago-areas HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:5688 - "GET /api/runs HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:13971 - "GET /api/settlements?limit=5000 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:18348 - "GET /api/inundation-products HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:3106 - "GET /api/health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:3106 - "GET /api/bago-areas HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:24831 - "GET /api/runs HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:23178 - "GET /api/inundation-products HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:5361 - "GET /api/settlements?limit=5000 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:6410 - "GET /api/prediction/calendar-bounds HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:5366 - "GET /api/prediction/map-scores?date=2026-10-21 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:5366 - "GET /api/inventory/east HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:6410 - "GET /api/inventory/west HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:36416 - "GET /api/census HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:36416 - "GET /api/prediction/calendar-bounds HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:6410 - "GET /api/prediction/map-scores?date=2026-10-21 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:6410 - "GET /api/prediction/map-scores?date=2026-10-14 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:38629 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38629 - "GET /assets/index-DG7Utk8Z.js HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:2309 - "GET /assets/index-ly96k45H.css HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:2309 - "GET /api/health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:38629 - "GET /api/bago-areas HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:58197 - "GET /api/runs HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:41120 - "GET /api/inundation-products HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:58100 - "GET /api/settlements?limit=5000 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:58100 - "GET /api/inventory/east HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:41120 - "GET /api/inventory/west HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:58197 - "GET /api/census HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:58197 - "GET /api/prediction/calendar-bounds HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:58197 - "GET /api/prediction/map-scores?date=2026-10-21 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:48063 - "GET /api/prediction/calendar-bounds HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:42859 - "GET /api/prediction/map-scores?date=2026-10-21 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:23325 - "GET /simulation/flood-days HTTP/1.1" 200 OK
+INFO:     127.0.0.1:23326 - "GET /simulation/day/2024-09-11?township=Nyaunglebin HTTP/1.1" 200 OK
+INFO:     127.0.0.1:23327 - "GET /simulation/allocation/2024-09-11?township=Nyaunglebin HTTP/1.1" 200 OK
+INFO:     127.0.0.1:15124 - "GET /simulation/flood-days HTTP/1.1" 200 OK
+INFO:     127.0.0.1:33528 - "GET /api/simulation/flood-days HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:33529 - "GET /api/simulation/day/2024-09-11?township=Nyaunglebin HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:33530 - "GET /api/simulation/allocation/2024-09-11?township=Nyaunglebin HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:10032 - "GET /api/inventory/east HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:29531 - "GET /api/prediction/calendar-bounds HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:21822 - "GET /api/prediction/map-scores?date=2026-10-21 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:21822 - "GET /api/inventory/east HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:29531 - "GET /api/census HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:21822 - "GET /api/inventory/west HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:21822 - "GET /api/inventory/east HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:49439 - "GET /api/inventory/east HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:54337 - "GET /api/inventory/west HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:13936 - "GET /api/census HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:6031 - "GET /api/prediction/calendar-bounds HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:33161 - "GET /api/prediction/map-scores?date=2026-10-21 HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:19708 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:19708 - "GET /assets/index-DG7Utk8Z.js HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:3313 - "GET /assets/index-ly96k45H.css HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:3313 - "GET /api/bago-areas HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:19708 - "GET /api/inundation-products HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:13225 - "GET /api/runs HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:14337 - "GET /api/health HTTP/1.1" 404 Not Found
+INFO:     127.0.0.1:8070 - "GET /api/settlements?limit=5000 HTTP/1.1" 404 Not Found

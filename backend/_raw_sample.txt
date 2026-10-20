@@ -1,0 +1,4 @@
+date,rainfall_mm,river_discharge_m3s,township_id,township,lat,lng,households,affected_people,flood,rainfall_3d_mm,discharge_delta,discharge_ratio
+2021-04-01,0.0,0.0,bago,Bago,17.335,96.481,,,0,0.0,0.0,0.0
+2021-04-02,0.0,0.0,bago,Bago,17.335,96.481,,,0,0.0,0.0,0.0
+2021-04-03,0.0,0.03,bago,Bago,17.335,96.481,,,0,0.0,0.03,0.1875
